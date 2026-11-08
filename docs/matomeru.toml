@@ -1,0 +1,29 @@
+# Matomeru Configuration
+# Copy this file to matomeru.toml in your working directory
+# and fill in your actual values.
+
+[profile]
+# Path to your Markdown interest profile (required)
+path = "/path/to/profile.md"
+
+[reddit]
+# Subreddits to monitor (required, at least one)
+subreddits = ["python", "rust", "machinelearning"]
+
+# Number of top posts per subreddit (default: 3)
+posts_per_subreddit = 3
+
+# Number of top comments per post (default: 20)
+comments_per_post = 20
+
+[arxiv]
+# arXiv categories to monitor
+categories = ["cs.AI", "cs.LG"]
+
+# Optional search terms
+search_terms = ["large language model", "transformer"]
+
+[notes]
+# Notes MCP folder paths (create these in your Notes vault)
+reddit_folder = "Matomeru/Reddit"
+arxiv_folder = "Matomeru/arXiv"

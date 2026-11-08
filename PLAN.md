@@ -1,0 +1,150 @@
+# Matomeru — Plan
+
+**Status:** Design agreed; implementation not started.  
+**Purpose:** Build a small cron-invoked Python package that collects Reddit and arXiv material, uses a local LLM to produce personalized summaries, emails each source digest separately, and saves one daily note per source.
+
+## Goals
+
+1. Run each source independently from cron:
+   - `matomeru-reddit`
+   - `matomeru-arxiv`
+2. Produce an understandable daily digest from a rolling 24-hour window.
+3. Use a single Markdown interest profile for both sources.
+4. Store source-specific daily notes in the user's Notes MCP folders and send separate emails.
+5. Make routine reruns idempotent, provide an explicit `--force` option, log failures, and return a non-zero exit status for incomplete runs.
+6. Keep deployment as scripts plus configuration and a local state file. Do not introduce a continuously running Matomeru service or Docker requirement.
+
+## Out of scope for v1
+
+- Exhaustive Reddit-wide discovery or arbitrary searches across all of Reddit.
+- Archiving full source content as a separate long-term data store.
+- A generic plugin framework. Keep a shared pipeline and source-specific adapters; add another source when there is a concrete use case.
+- A hosted LLM requirement. The configured LLM endpoint is intended to be local and OpenAI-compatible.
+
+## Agreed behavior
+
+### Time window and identity
+
+- At invocation, capture an end instant and process the half-open interval `[end - 24 hours, end)` using UTC instants.
+- Use the IANA timezone configured by `TZ` to label the report date and render local times. Configure the host's cron timezone consistently: setting `TZ` in Matomeru's `.env` does not itself change when cron starts the command.
+- A daily local-time cron run around a daylight-saving transition can be separated from the previous run by 23 or 25 elapsed hours. A strict rolling 24-hour window can therefore overlap or leave a one-hour gap at that transition. This is an accepted trade-off for a window independent of a hard-coded run hour.
+- Save the chosen window with the run state. A normal completed rerun is skipped; `--force` reprocesses that saved window, updates the date's note, and sends another email.
+
+### Reddit
+
+- The user configures the subreddits and per-subreddit post limit. The current proposed default is the top 3 posts per subreddit and 20 top comments per post; keep both configurable.
+- Keep Sagashi's Reddit API broadly reusable rather than adding a Matomeru-specific digest operation. Matomeru owns its 24-hour schedule, profile matching, and digest construction.
+- Extend `search_reddit` with an optional `subreddit` filter. If omitted, preserve the current `r/all` behavior; this remains query search sorted by relevance.
+- Add a general `list_subreddit_posts` MCP tool for discovering submissions, with general sort, time-window, and limit inputs. It returns structured post metadata and permalinks. Matomeru supplies its explicit window and chooses the desired top-post behavior.
+- Add a general `fetch_reddit_threads` MCP tool that accepts one or more post IDs/URLs and a comment limit, then returns structured post content and top comments with per-item errors. Process a batch sequentially within one AsyncPRAW session. (Shipped in Sagashi 0.3.1; `list_subreddit_posts` provides the listing side with explicit UTC window filtering.)
+- Keep `fetch_page` available for fetching a single URL; it can share internal Reddit fetching code with the dedicated Reddit tool.
+- Matomeru composes listing and fetching, then summarizes each selected post and the main themes in its comments, explains why it may matter to the profile, and includes the source link. Reddit posts are selected by subreddit and top ranking; v1 does not add a separate hard relevance cutoff unless later requested.
+- Deduplicate the same Reddit submission if it appears in more than one configured subreddit, while retaining its subreddit context.
+- Existing Sagashi behavior: `search_reddit` searches `r/all` by query and relevance; `fetch_page` routes known Reddit URLs through the official API and returns thread content and top comments. These remain useful capabilities and should continue to work.
+
+### arXiv
+
+- The user configures arXiv categories and optional search terms to define a candidate pool. The exact values are deployment configuration, not project constants.
+- Retrieve new submissions within the same rolling interval, then use the abstract and shared profile to decide relevance. Only relevant papers receive summaries.
+- Each selected paper's result includes a rough summary, why it may be interesting to the user, and the paper reference link.
+- Confirm the exact arXiv API query semantics and date fields during implementation; candidate retrieval must respect the run's explicit UTC interval rather than assume a particular cron hour.
+
+### Profile and structured LLM output
+
+- Use one Markdown file for both sources. Suggested sections: general interests and preferences, Reddit-specific interests, arXiv-specific interests, exclusions, and examples of especially useful or unhelpful material.
+- Keep natural-language interests out of `.env`; configure the profile file path separately.
+- Use PydanticAI with a configured local OpenAI-compatible endpoint and a typed output model. Structured output should capture at least the summary, relevance explanation, source link, and (for arXiv) a relevance decision.
+- Treat Reddit posts, comments, and abstracts as untrusted source data, not as instructions to the model. The exact endpoint and model must be checked for structured-output compatibility during integration testing.
+
+### Email and notes
+
+- Send one email for each source command through configured SMTP settings. Email content should have a plain-text representation; whether to include an HTML alternative can be decided while implementing the mail renderer.
+- Write one Markdown note per source and local report date to the configured Notes MCP folder, using a stable date-based path/title. A no-results run still writes an explicit no-results note and sends a no-results email.
+- Configure the Notes MCP URL and both folder paths; do not hard-code personal paths into the package. The user will create the two folders. The server exposes `create_note` (create or update by path) and `create_folder`; use the stable note path for update/idempotency.
+- Try email and note delivery independently. If one destination fails, still attempt the other, record the failure, and exit non-zero.
+
+### Partial failures and state
+
+- Continue processing after an individual Reddit post, subreddit, arXiv item, or LLM operation fails where safe. Log the affected item and error, mark the digest partial, deliver the available content, and exit non-zero.
+- Use SQLite at `~/.local/state/matomeru/state.sqlite3` by default, overridable with `MATOMERU_STATE_DB`. Create its parent directory as needed. This is a regular local file, not a server; keep it outside the checkout and out of version control.
+- Store run identity, time window, item/delivery statuses, and enough generated-result state to support retries consistently. Do not store credentials. Avoid persisting full raw source material unless implementation demonstrates it is required.
+- A completed source/date run is skipped on ordinary rerun. `--force` deliberately rebuilds that run from its saved time window, replaces the existing note, and sends a new email.
+- SMTP cannot provide an absolute exactly-once guarantee if the mail server accepts a message and the process crashes before recording success. Document this small crash window.
+
+### Logging and Reddit rate limits
+
+- Use Python logging to stdout/stderr in a cron-friendly format. Include source, run date/window, item identifiers, partial/failure state, delivery state, and rate-limit waits/errors. Never log credentials or full private configuration.
+- Sagashi currently uses AsyncPRAW. The Reddit API's published rate figure is 100 requests per minute per OAuth client ID, but Reddit's terms allow it to set limits and actual response headers should be treated as authoritative.
+- Do not add a fixed sleep/cooldown in Matomeru. Rely on AsyncPRAW's adaptive handling, keep the new Sagashi batch sequential, and log rate-limit waits/errors. See [Reddit rate-limit research](docs/research/reddit-rate-limits.md).
+
+## Configuration boundary
+
+Use three kinds of configuration, with concrete names finalized alongside implementation:
+
+| Configuration | Contents |
+|---|---|
+| `.env` | Secrets and service/runtime settings: LLM base URL/model/key, Sagashi and Notes MCP URLs, SMTP host/port/credentials/recipient, `TZ`, SQLite path. |
+| TOML file | Structured source and destination settings: subreddit list and limits, arXiv categories/searches, profile path, Notes MCP folder paths. |
+| Markdown profile | Human-authored interests, exclusions, and examples used by both source summaries. |
+
+Never commit `.env` or the SQLite database. Provide a safe `.env.example` with placeholders during implementation. The Sagashi MCP URL still needs to be supplied in deployment configuration; the Notes MCP URL currently provided is `http://192.168.178.64:9008/mcp` and must remain overridable.
+
+## Proposed architecture
+
+```text
+cron
+ ├─ matomeru-reddit ─┐
+ └─ matomeru-arxiv ──┴─> shared run/config/state/logging pipeline
+                           ├─ Reddit source: Sagashi MCP
+                           ├─ arXiv source: arXiv API
+                           ├─ summarization/relevance: PydanticAI + local OpenAI-compatible API
+                           ├─ notes: Notes MCP
+                           └─ email: SMTP
+```
+
+Keep source-specific collection and normalization separate from the shared digest, LLM, state, and delivery components. Each CLI should invoke only its own source and failures must not cross source boundaries.
+
+## Implementation sequence
+
+1. **Sagashi integration contract and Reddit extension** — ✅ Done, released as Sagashi 0.3.0/0.3.1
+   - Shipped: `search_reddit` gained an optional `subreddit` scope (default `r/all`); new `list_subreddit_posts` MCP tool listing posts via PRAW listing generators (hot/new/top/rising/controversial) with exclusive UTC time-window filtering (epoch seconds or ISO-8601) and fullname cursor pagination; new `fetch_reddit_threads` MCP tool fetching multiple threads sequentially through one AsyncPRAW client with structured results and per-item errors.
+   - Naming note: the batch tool initially shipped as `batch_fetch_threads` in 0.3.0 and was renamed to `fetch_reddit_threads` in 0.3.1, matching the plan's working name. Matomeru integration should target `fetch_reddit_threads`.
+   - Verified: ruff format/check, `ty check .`, and 62 tests pass; full diff reviewed and corrected (UTC parsing, prefix normalization, pagination exposure, listing generators instead of empty-query search).
+2. **Matomeru package foundation** — next up
+   - Replace the starter `matomeru` placeholder command with the two source-specific console scripts.
+   - Add typed config loading, `.env` support, TOML source config, profile loading, logging, UTC window calculation, and SQLite state.
+3. **Source collection**
+   - Add a Sagashi MCP client and map Reddit results into a typed internal representation.
+   - Add arXiv candidate retrieval using configured categories/search terms and explicit UTC window filtering.
+   - Unit-test both with mocked network/MCP dependencies.
+4. **LLM processing**
+   - Add PydanticAI models and prompts for Reddit post/discussion summaries and arXiv relevance screening/summaries.
+   - Validate structured-output behavior against the chosen local model; constrain output to source evidence and links.
+5. **Delivery and orchestration**
+   - Add SMTP rendering/sending and Notes MCP note upsert.
+   - Implement empty results, partial failures, independently tracked note/email delivery, normal reruns, and `--force`.
+6. **Verification and operations docs**
+   - Add unit/integration tests with no real network in the default test suite.
+   - Document `.env`, TOML, profile, cron setup, timezone alignment, state backup/reset, logging, and recovery from partial runs.
+   - Run a manual end-to-end smoke test against the user's Sagashi, Notes MCP, local LLM, and SMTP configuration before calling v1 operational.
+
+## Acceptance criteria for v1
+
+- `uv run matomeru-reddit` and `uv run matomeru-arxiv` operate independently and return useful non-zero status on incomplete runs.
+- Both use the same configured rolling 24-hour window and profile, but only collect their own source.
+- Reddit input comes from configured subreddit top posts and includes post/comment context; Sagashi's existing `r/all` search is not used as a substitute for subreddit feeds.
+- arXiv papers are screened against the profile and only relevant items are summarized.
+- Separate source emails and date-based notes are produced, including explicit no-results outputs.
+- Ordinary reruns do not duplicate completed source/date deliveries; `--force` updates the note and sends another email for the same saved interval.
+- Item and destination errors are logged; successful remaining items/destinations are retained; incomplete runs exit non-zero.
+- Rate-limit handling is adaptive through AsyncPRAW, without an arbitrary fixed cooldown in Matomeru.
+
+## Deployment values still to provide
+
+- The Reddit subreddit list and any per-subreddit overrides.
+- arXiv category/search filters.
+- The shared profile Markdown content and its deployment path.
+- Names/paths of the two folders the user will create in the notes vault.
+- Sagashi MCP URL, local LLM base URL/model/API key, SMTP settings/recipient, and the selected IANA timezone.
+
+These are deployment inputs, not blockers to building the reusable package and its sample configuration.

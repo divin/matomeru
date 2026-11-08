@@ -1,0 +1,27 @@
+[project]
+name = "matomeru"
+version = "0.1.0"
+description = "Daily Reddit and arXiv digests with personalized summaries"
+readme = "README.md"
+authors = [
+    { name = "divin", email = "71128266+divin@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.2.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.99",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "ruff>=0.17.4",
+]
