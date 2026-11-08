@@ -110,9 +110,9 @@ Keep source-specific collection and normalization separate from the shared diges
    - Shipped: `search_reddit` gained an optional `subreddit` scope (default `r/all`); new `list_subreddit_posts` MCP tool listing posts via PRAW listing generators (hot/new/top/rising/controversial) with exclusive UTC time-window filtering (epoch seconds or ISO-8601) and fullname cursor pagination; new `fetch_reddit_threads` MCP tool fetching multiple threads sequentially through one AsyncPRAW client with structured results and per-item errors.
    - Naming note: the batch tool initially shipped as `batch_fetch_threads` in 0.3.0 and was renamed to `fetch_reddit_threads` in 0.3.1, matching the plan's working name. Matomeru integration should target `fetch_reddit_threads`.
    - Verified: ruff format/check, `ty check .`, and 62 tests pass; full diff reviewed and corrected (UTC parsing, prefix normalization, pagination exposure, listing generators instead of empty-query search).
-2. **Matomeru package foundation** — next up
-   - Replace the starter `matomeru` placeholder command with the two source-specific console scripts.
-   - Add typed config loading, `.env` support, TOML source config, profile loading, logging, UTC window calculation, and SQLite state.
+2. **Matomeru package foundation** — in progress (2a done, committed `e41a638`)
+   - ✅ 2a: typed config loading (TOML `AppConfig` via stdlib `tomllib`, `.env`-backed `RuntimeConfig`), profile loading, `ConfigError` aggregation, cron-friendly logging with `MATOMERU_LOG_LEVEL`, sample `docs/matomeru.toml`, 15 tests. Type checker is `ty` (worker initially swapped in pyright; corrected during review).
+   - Next (2b): UTC window calculation, SQLite state store, `matomeru-reddit` / `matomeru-arxiv` console scripts wired to shared pipeline stubs.
 3. **Source collection**
    - Add a Sagashi MCP client and map Reddit results into a typed internal representation.
    - Add arXiv candidate retrieval using configured categories/search terms and explicit UTC window filtering.
