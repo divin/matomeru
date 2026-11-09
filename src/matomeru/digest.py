@@ -15,7 +15,9 @@ from matomeru.models import ArxivPaper, RedditThread, ThreadFetchError
 from matomeru.window import RunWindow
 
 REDDIT_NO_RESULTS = "No posts matched the configured subreddits in this window."
+REDDIT_ALL_FAILED = "Posts were collected in this window, but none could be summarized (see the Errors section below)."
 ARXIV_NO_RESULTS = "No relevant arXiv papers matched the configured categories and search terms in this window."
+ARXIV_ALL_FAILED = "Papers were collected in this window, but none could be summarized (see the Errors section below)."
 
 PARTIAL_LINE = "Partial run: some items failed and are omitted."
 SCREENED_OUT_LINE = "{count} further paper(s) were screened out as not relevant."
@@ -38,14 +40,23 @@ def _render(
     window: RunWindow,
     item_blocks: list[str],
     no_results_body: str,
+    all_failed_body: str,
     errors: list[str],
     trailing_lines: list[str],
 ) -> str:
-    """Assemble a digest body from already-rendered pieces (fixed template)."""
+    """Assemble a digest body from already-rendered pieces (fixed template).
+
+    With no items, a genuinely empty window renders ``no_results_body``;
+    items that were collected but all lost to errors render
+    ``all_failed_body`` instead, so the two situations read differently.
+    """
     lines: list[str] = [heading, _window_line(window), ""]
 
     if item_blocks:
         lines.extend(item_blocks)
+    elif errors:
+        lines.append(all_failed_body)
+        lines.append("")
     else:
         lines.append(no_results_body)
         lines.append("")
@@ -111,6 +122,7 @@ def render_reddit_digest(
         window=window,
         item_blocks=item_blocks,
         no_results_body=REDDIT_NO_RESULTS,
+        all_failed_body=REDDIT_ALL_FAILED,
         errors=[f"{error.item}: {error.error}" for error in fetch_errors],
         trailing_lines=trailing,
     )
@@ -167,6 +179,7 @@ def render_arxiv_digest(
         window=window,
         item_blocks=item_blocks,
         no_results_body=ARXIV_NO_RESULTS,
+        all_failed_body=ARXIV_ALL_FAILED,
         errors=list(fetch_errors),
         trailing_lines=trailing,
     )

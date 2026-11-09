@@ -152,3 +152,43 @@ class TestArxivDigest:
         lines = body.splitlines()
         assert lines[-1] == PARTIAL_LINE
         assert lines[-2] == SCREENED_OUT_LINE.format(count=3)
+
+
+class TestAllFailedBody:
+    """Empty items with errors must read differently from a quiet day."""
+
+    def test_reddit_all_failed_shows_all_failed_body(self) -> None:
+        body = render_reddit_digest(
+            "2026-11-09",
+            WINDOW,
+            items=[],
+            fetch_errors=[ThreadFetchError(index=0, item="t3_abc", error="Connection error.")],
+            partial=True,
+        )
+        assert "No posts matched" not in body
+        assert "none could be summarized" in body
+        assert "## Errors" in body
+        assert "Partial run" in body
+
+    def test_reddit_quiet_day_keeps_no_results(self) -> None:
+        body = render_reddit_digest("2026-11-09", WINDOW, items=[], fetch_errors=[], partial=False)
+        assert "No posts matched" in body
+        assert "## Errors" not in body
+
+    def test_arxiv_all_failed_shows_all_failed_body(self) -> None:
+        body = render_arxiv_digest(
+            "2026-11-09",
+            WINDOW,
+            items=[],
+            screened_out=0,
+            fetch_errors=["screening failed for 2601.00001: boom"],
+            partial=True,
+        )
+        assert "No relevant arXiv papers" not in body
+        assert "none could be summarized" in body
+        assert "## Errors" in body
+
+    def test_arxiv_quiet_day_keeps_no_results(self) -> None:
+        body = render_arxiv_digest("2026-11-09", WINDOW, items=[], screened_out=0, fetch_errors=[], partial=False)
+        assert "No relevant arXiv papers" in body
+        assert "## Errors" not in body
