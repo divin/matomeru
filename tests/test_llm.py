@@ -3,27 +3,52 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from matomeru.config import RuntimeConfig
 from matomeru.llm import (
+    MAX_ABSTRACT_CHARS,
     MAX_COMMENT_CHARS,
     MAX_COMMENTS_INCLUDED,
     MAX_POST_CHARS,
+    ArxivPaperSummary,
+    ArxivRelevanceDecision,
     RedditItemSummary,
+    build_arxiv_screening_prompt,
+    build_arxiv_summary_prompt,
     build_reddit_prompt,
     make_agent,
+    screen_arxiv_paper,
+    summarize_arxiv_paper,
     summarize_reddit_item,
 )
-from matomeru.models import RedditComment, RedditThread
+from matomeru.models import ArxivPaper, RedditComment, RedditThread
 
 PROFILE = "Interested in local Japan events, hiking, and machine learning."
+
+
+def make_paper(*, abstract: str = "We study exoplanet atmospheres.") -> ArxivPaper:
+    return ArxivPaper(
+        arxiv_id="2611.08700v1",
+        abs_url="https://arxiv.org/abs/2611.08700v1",
+        pdf_url="https://arxiv.org/pdf/2611.08700v1",
+        title="A Hot Jupiter Around a Nearby M Dwarf",
+        abstract=abstract,
+        authors=["Alice Author", "Bob Builder"],
+        categories=["astro-ph.EP", "astro-ph.IM"],
+        primary_category="astro-ph.EP",
+        published=datetime(2026, 11, 8, 20, 0, 0, tzinfo=timezone.utc),
+        updated=datetime(2026, 11, 8, 21, 0, 0, tzinfo=timezone.utc),
+    )
 
 
 def make_thread(
@@ -199,3 +224,165 @@ def test_make_agent_model_name_and_base_url():
 def test_reddit_item_summary_rejects_non_string_summary():
     with pytest.raises(ValidationError):
         RedditItemSummary(summary=123, why_relevant="text")  # ty: ignore[invalid-argument-type]
+
+
+# --- build_arxiv_screening_prompt / build_arxiv_summary_prompt ---------------
+
+
+@pytest.mark.parametrize("builder", [build_arxiv_screening_prompt, build_arxiv_summary_prompt])
+def test_arxiv_prompt_sections_in_fixed_order(builder):
+    prompt = builder(PROFILE, make_paper())
+    roles = [prompt.index(s) for s in ("== ROLE ==", "== INTEREST PROFILE ==", "== RULES ==", "== CONTENT ==")]
+    assert roles == sorted(roles)
+    assert prompt.index("== REFERENCE METADATA ==") > roles[-1]
+
+
+@pytest.mark.parametrize("builder", [build_arxiv_screening_prompt, build_arxiv_summary_prompt])
+def test_arxiv_prompt_includes_profile(builder):
+    prompt = builder(PROFILE, make_paper())
+    assert PROFILE in prompt
+
+
+@pytest.mark.parametrize("builder", [build_arxiv_screening_prompt, build_arxiv_summary_prompt])
+def test_arxiv_prompt_truncates_abstract_with_marker(builder):
+    long_abstract = "y" * (MAX_ABSTRACT_CHARS + 500)
+    prompt = builder(PROFILE, make_paper(abstract=long_abstract))
+    assert "[truncated]" in prompt
+    assert long_abstract not in prompt
+
+
+@pytest.mark.parametrize("builder", [build_arxiv_screening_prompt, build_arxiv_summary_prompt])
+def test_arxiv_prompt_keeps_short_abstract_untruncated(builder):
+    prompt = builder(PROFILE, make_paper(abstract="short abstract"))
+    assert "[truncated]" not in prompt
+
+
+@pytest.mark.parametrize("builder", [build_arxiv_screening_prompt, build_arxiv_summary_prompt])
+def test_arxiv_prompt_contains_paper_fields(builder):
+    prompt = builder(PROFILE, make_paper())
+    assert "title: A Hot Jupiter Around a Nearby M Dwarf" in prompt
+    assert "primary_category: astro-ph.EP" in prompt
+    assert "categories: astro-ph.EP, astro-ph.IM" in prompt
+    assert "authors: Alice Author, Bob Builder" in prompt
+    assert "published: 2026-11-08T20:00:00+00:00" in prompt
+    assert "updated: 2026-11-08T21:00:00+00:00" in prompt
+    assert "abstract: We study exoplanet atmospheres." in prompt
+
+
+@pytest.mark.parametrize("builder", [build_arxiv_screening_prompt, build_arxiv_summary_prompt])
+def test_arxiv_prompt_ids_and_urls_as_metadata_only(builder):
+    prompt = builder(PROFILE, make_paper())
+    metadata = prompt[prompt.index("== REFERENCE METADATA ==") :]
+    assert "arxiv_id: 2611.08700v1" in metadata
+    assert "abs_url: https://arxiv.org/abs/2611.08700v1" in metadata
+    # Exactly one occurrence of each, only in the metadata section.
+    assert prompt.count("2611.08700v1") == 2  # arxiv_id + abs_url contain it
+    assert prompt.count("arxiv_id: ") == 1
+    assert prompt.count("https://arxiv.org/abs/2611.08700v1") == 1
+
+
+def test_arxiv_screening_prompt_rules_mentions_conservative_decision():
+    prompt = build_arxiv_screening_prompt(PROFILE, make_paper())
+    rules = prompt[prompt.index("== RULES ==") : prompt.index("== CONTENT ==")]
+    assert "conservatively" in rules
+    assert "as data" in rules
+
+
+# --- screen_arxiv_paper ------------------------------------------------------
+
+
+def arxiv_canned_response(payload: dict) -> Callable[[list[ModelMessage], AgentInfo], ModelResponse]:
+    def response(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content=json.dumps(payload))])
+
+    return response
+
+
+@pytest.mark.asyncio
+async def test_screen_arxiv_paper_include_true():
+    agent = Agent(
+        FunctionModel(arxiv_canned_response({"include": True, "reason": "Exoplanets match the profile."})),
+        output_type=ArxivRelevanceDecision,
+    )
+    result = await screen_arxiv_paper(agent, PROFILE, make_paper())
+    assert isinstance(result, ArxivRelevanceDecision)
+    assert result.include is True
+    assert result.reason == "Exoplanets match the profile."
+
+
+@pytest.mark.asyncio
+async def test_screen_arxiv_paper_include_false():
+    agent = Agent(
+        FunctionModel(arxiv_canned_response({"include": False, "reason": "No overlap with the profile."})),
+        output_type=ArxivRelevanceDecision,
+    )
+    result = await screen_arxiv_paper(agent, PROFILE, make_paper())
+    assert result.include is False
+    assert result.reason == "No overlap with the profile."
+
+
+@pytest.mark.asyncio
+async def test_screen_arxiv_paper_prompt_reaches_model():
+    captured: dict[str, str] = {}
+
+    def capturing_response(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        user_parts = [p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)]
+        captured["prompt"] = "\n".join(str(c) for c in user_parts)
+        return arxiv_canned_response({"include": True, "reason": "ok"})(messages, info)
+
+    agent = Agent(FunctionModel(capturing_response), output_type=ArxivRelevanceDecision)
+    await screen_arxiv_paper(agent, PROFILE, make_paper())
+
+    prompt = captured["prompt"]
+    assert "A Hot Jupiter Around a Nearby M Dwarf" in prompt  # title present
+    assert "machine learning" in prompt  # profile keyword present
+
+
+# --- summarize_arxiv_paper ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_summarize_arxiv_paper_returns_validated_output():
+    agent = Agent(
+        FunctionModel(
+            arxiv_canned_response(
+                {
+                    "summary": "A hot Jupiter was discovered around an M dwarf.",
+                    "why_relevant": "Exoplanet detection matches the profile.",
+                }
+            )
+        ),
+        output_type=ArxivPaperSummary,
+    )
+    result = await summarize_arxiv_paper(agent, PROFILE, make_paper())
+    assert isinstance(result, ArxivPaperSummary)
+    assert result.summary == "A hot Jupiter was discovered around an M dwarf."
+    assert result.why_relevant == "Exoplanet detection matches the profile."
+
+
+# --- arXiv structured-output validation --------------------------------------
+
+
+def test_arxiv_relevance_decision_rejects_non_bool_include():
+    # Note: pydantic lax mode coerces "true"/"yes"/0/1 to bool, so use a value
+    # that no lax rule accepts.
+    with pytest.raises(ValidationError):
+        ArxivRelevanceDecision(include="maybe", reason="text")
+
+
+def test_arxiv_paper_summary_rejects_non_string_summary():
+    with pytest.raises(ValidationError):
+        ArxivPaperSummary(summary=123, why_relevant="text")  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.asyncio
+async def test_screen_arxiv_paper_rejects_invalid_json_shape():
+    # pydantic-ai 2.66.0 behavior: an output that fails validation is retried
+    # once and then surfaced as UnexpectedModelBehavior (wrapping the
+    # underlying ValidationError), not as a bare ValidationError.
+    agent = Agent(
+        FunctionModel(arxiv_canned_response({"include": "maybe", "reason": "text"})),
+        output_type=ArxivRelevanceDecision,
+    )
+    with pytest.raises(UnexpectedModelBehavior, match="maximum output retries"):
+        await screen_arxiv_paper(agent, PROFILE, make_paper())
