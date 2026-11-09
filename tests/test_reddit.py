@@ -199,10 +199,61 @@ class TestCollectReddit:
         assert call["after"] == str(START_TS)
         assert call["before"] is None
 
-    async def test_all_subreddits_fail_still_no_fetch(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_all_subreddits_fail_raises(self, caplog: pytest.LogCaptureFixture) -> None:
+        """All listings failing aborts collection (no misleading no-results digest)."""
         stub = StubSagashiClient(listings={"a": RuntimeError("x"), "b": RuntimeError("y")})
         with caplog.at_level(logging.WARNING, logger="matomeru.reddit"):
-            threads, errors = await collect_reddit(as_client(stub), ["a", "b"], WINDOW)
+            with pytest.raises(RuntimeError, match="all 2 subreddit listing"):
+                await collect_reddit(as_client(stub), ["a", "b"], WINDOW)
         assert stub.fetch_calls == []
-        assert (threads, errors) == ([], [])
         assert caplog.text.count("listing failed") == 2
+
+
+class TestCollectRedditTotalFailure:
+    """Total listing failure must abort the run, not fake a quiet day."""
+
+    @pytest.mark.asyncio
+    async def test_all_listings_failed_raises(self) -> None:
+        class FailingClient:
+            async def list_subreddit_posts(self, *args: object, **kwargs: object) -> None:
+                raise RuntimeError("MCP call failed")
+
+        with pytest.raises(RuntimeError, match="all 2 subreddit listing"):
+            await collect_reddit(cast("SagashiClient", FailingClient()), ["a", "b"], WINDOW)
+
+    @pytest.mark.asyncio
+    async def test_partial_listing_failure_still_collects(self) -> None:
+        """One broken subreddit must not abort the run (isolation)."""
+        from matomeru.models import RedditPost
+
+        class MixedClient:
+            async def list_subreddit_posts(self, subreddit: str, **kwargs: object) -> SubredditListing:
+                if subreddit == "broken":
+                    raise RuntimeError("boom")
+                post = RedditPost(
+                    id="p1",
+                    subreddit=subreddit,
+                    title="t",
+                    score=1,
+                    created_utc=WINDOW.start_utc.timestamp() + 10,
+                    permalink=f"/r/{subreddit}/comments/p1/",
+                )
+                return SubredditListing(post_items=[post], cursor=None)
+
+            async def fetch_reddit_threads(self, items: list[str], comment_count: int = 20) -> ThreadBatch:
+                return ThreadBatch(
+                    threads=[
+                        RedditThread(
+                            id=items[0],
+                            subreddit="ok",
+                            title="t",
+                            created_utc=WINDOW.start_utc.timestamp() + 10,
+                            permalink="/r/ok/comments/p1/",
+                        )
+                    ],
+                    errors=[],
+                )
+
+        threads, errors = await collect_reddit(cast("SagashiClient", MixedClient()), ["ok", "broken"], WINDOW)
+        assert len(threads) == 1
+        assert errors == []

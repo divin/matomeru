@@ -132,6 +132,12 @@ def load_app_config(path: str | None = None) -> AppConfig:
     )
 
 
+def _optional_env(name: str) -> str | None:
+    """Read an optional env var, treating unset and empty as None."""
+    value = os.environ.get(name)
+    return value if value else None
+
+
 def _parse_smtp_port(value: str) -> int:
     """Parse SMTP_PORT, converting a bad value into a ConfigError."""
     try:
@@ -183,11 +189,11 @@ def load_runtime_config() -> RuntimeConfig:
 
     return RuntimeConfig(
         sagashi_mcp_url=os.environ["SAGASHI_MCP_URL"],
-        sagashi_mcp_token=os.environ.get("SAGASHI_MCP_TOKEN"),
+        sagashi_mcp_token=_optional_env("SAGASHI_MCP_TOKEN"),
         notes_mcp_url=os.environ["NOTES_MCP_URL"],
-        notes_mcp_token=os.environ.get("NOTES_MCP_TOKEN"),
+        notes_mcp_token=_optional_env("NOTES_MCP_TOKEN"),
         llm_base_url=os.environ["LLM_BASE_URL"],
-        llm_api_key=os.environ.get("LLM_API_KEY"),
+        llm_api_key=_optional_env("LLM_API_KEY"),
         llm_model=os.environ["LLM_MODEL"],
         smtp_host=os.environ["SMTP_HOST"],
         smtp_port=_parse_smtp_port(os.environ["SMTP_PORT"]),

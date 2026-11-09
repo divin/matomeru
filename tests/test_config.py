@@ -438,3 +438,47 @@ class TestConfigureLogging:
         captured = capsys.readouterr()
         assert "INFO" in captured.err
         assert "info message" in captured.err
+
+
+class TestOptionalEnvVars:
+    """Empty-string optional env vars must behave like unset ones."""
+
+    def _full_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        values = {
+            "SAGASHI_MCP_URL": "http://sagashi/mcp",
+            "NOTES_MCP_URL": "http://notes/mcp",
+            "LLM_BASE_URL": "http://llm/v1",
+            "LLM_MODEL": "test-model",
+            "SMTP_HOST": "localhost",
+            "SMTP_PORT": "25",
+            "SMTP_FROM": "a@b.c",
+            "SMTP_TO": "d@e.f",
+            "TZ": "UTC",
+        }
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+
+    def test_empty_tokens_and_key_become_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Explicitly empty SAGASHI_MCP_TOKEN / NOTES_MCP_TOKEN / LLM_API_KEY yield None."""
+        self._full_env(monkeypatch)
+        monkeypatch.setenv("SAGASHI_MCP_TOKEN", "")
+        monkeypatch.setenv("NOTES_MCP_TOKEN", "")
+        monkeypatch.setenv("LLM_API_KEY", "")
+
+        runtime = load_runtime_config()
+
+        assert runtime.sagashi_mcp_token is None
+        assert runtime.notes_mcp_token is None
+        assert runtime.llm_api_key is None
+
+    def test_unset_optionals_remain_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._full_env(monkeypatch)
+        monkeypatch.delenv("SAGASHI_MCP_TOKEN", raising=False)
+        monkeypatch.delenv("NOTES_MCP_TOKEN", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+
+        runtime = load_runtime_config()
+
+        assert runtime.sagashi_mcp_token is None
+        assert runtime.notes_mcp_token is None
+        assert runtime.llm_api_key is None

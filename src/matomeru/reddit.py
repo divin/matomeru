@@ -56,6 +56,7 @@ async def collect_reddit(
 
     # Deduped post ids in selection order; map id -> chosen post for logging.
     selected: dict[str, tuple[RedditPost, str]] = {}
+    listing_failures = 0
 
     for subreddit in subreddits:
         try:
@@ -68,6 +69,7 @@ async def collect_reddit(
             )
         except Exception as e:  # noqa: BLE001 - one broken subreddit must not kill the run
             logger.warning("listing failed for subreddit=%s: %s", subreddit, e)
+            listing_failures += 1
             continue
 
         in_window = [p for p in listing.post_items if start_ts < p.created_utc < end_ts]
@@ -92,6 +94,14 @@ async def collect_reddit(
             len(in_window),
             len(top),
             len(selected),
+        )
+
+    if listing_failures == len(subreddits) and len(subreddits) > 0:
+        # Total listing failure is a run failure, not a quiet day: raising
+        # aborts the run (fail_run + exit 1) instead of emitting a misleading
+        # "no results" digest.
+        raise RuntimeError(
+            f"all {len(subreddits)} subreddit listing(s) failed; Sagashi may be unreachable or misconfigured"
         )
 
     item_ids = list(selected)

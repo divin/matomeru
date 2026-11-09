@@ -13,6 +13,8 @@ wheels/
 
 # Secrets
 .env
+profile.md
+matomeru.toml
 
 # Local state database
 *.sqlite3
