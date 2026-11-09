@@ -126,9 +126,10 @@ Keep source-specific collection and normalization separate from the shared diges
 3. **Source collection** — ✅ Done (3a committed `2aa9881`, 3b committed `aeeb9cf`)
    - ✅ 3a: Sagashi MCP client (fastmcp streamable-HTTP, optional bearer via `SAGASHI_MCP_TOKEN`, per-call connections) + pydantic typed models + `collect_reddit` (windowed top-N listing, client-side interval filter, cross-subreddit dedupe, one batch `fetch_reddit_threads`, per-subreddit failure isolation). In-memory fake-FastMCP and stub-client tests.
    - ✅ 3b: arXiv retrieval via the official Atom API — TOML categories + quoted `abs:` search terms build the query, single polite request, newest-stamp (published/updated) window filter respecting arXiv's announcement cycle, malformed entries skipped; `ArxivPaper` model; `ARXIV_API_BASE` env and TOML `max_results`; mocked-transport tests. 109 tests total.
-4. **LLM processing** — in progress (4a committed `6463a44`)
-   - ✅ 4a: shared LLM layer (`pydantic-ai` 2.66.0, OpenAI-compatible endpoint from RuntimeConfig, no tools — slot-filling only), deterministic Reddit prompt builder with fixed sections and bounded truncation caps, `RedditItemSummary` structured output; FunctionModel tests (122 total).
-   - Next (4b): arXiv relevance screening + summaries reusing the same layer, with include/exclude decision per the profile.
+4. **LLM processing** — ✅ Done (4a `6463a44`, 4b `81ffea6`)
+   - ✅ 4a: shared LLM layer (`pydantic-ai` 2.66.0, OpenAI-compatible endpoint from RuntimeConfig, no tools — slot-filling only), deterministic Reddit prompt builder with fixed sections and bounded truncation caps, `RedditItemSummary` structured output.
+   - ✅ 4b: arXiv relevance screening (`ArxivRelevanceDecision`, conservative on uncertainty) + paper summaries (`ArxivPaperSummary`) reusing the same patterns; 3000-char abstract cap; ids/urls as reference metadata only.
+   - Deferred to phase 6: validating structured-output behavior against the real local endpoint in the smoke test.
 5. **Delivery and orchestration**
    - Add SMTP rendering/sending and Notes MCP note upsert.
    - Implement empty results, partial failures, independently tracked note/email delivery, normal reruns, and `--force`.
