@@ -71,6 +71,7 @@ arxiv_folder = "arXiv"
         assert config.reddit_comments_per_post == 30
         assert config.arxiv_categories == ["cs.AI", "cs.LG"]
         assert config.arxiv_search_terms == ["machine learning", "LLM"]
+        assert config.arxiv_max_results == 100
         assert config.notes_reddit_folder == "Reddit"
         assert config.notes_arxiv_folder == "arXiv"
 
@@ -99,6 +100,54 @@ arxiv_folder = ""
         assert config.reddit_comments_per_post == 20
         assert config.arxiv_categories == []
         assert config.arxiv_search_terms == []
+        assert config.arxiv_max_results == 100
+
+    def test_arxiv_max_results_default_and_override(self, tmp_path: Path) -> None:
+        """[arxiv] max_results defaults to 100 and can be overridden."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+path = "/home/user/profile.md"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+max_results = 250
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        config = load_app_config(str(toml_path))
+        assert config.arxiv_max_results == 250
+
+    def test_arxiv_max_results_invalid(self, tmp_path: Path) -> None:
+        """Non-positive or non-integer max_results raises ConfigError."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+path = "/home/user/profile.md"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+max_results = 0
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "max_results" in str(exc_info.value)
 
     def test_missing_toml_file(self, tmp_path: Path) -> None:
         """Missing TOML file raises ConfigError."""
@@ -210,6 +259,7 @@ class TestLoadRuntimeConfig:
             "SMTP_FROM": "matomeru@example.com",
             "SMTP_TO": "user@example.com",
             "TZ": "America/New_York",
+            "ARXIV_API_BASE": "http://arxiv-mirror.example.org",
             "LLM_API_KEY": "sk-1234",
             "SMTP_USER": "matomeru",
             "SMTP_PASSWORD": "secret",
@@ -229,6 +279,7 @@ class TestLoadRuntimeConfig:
         assert config.smtp_from == "matomeru@example.com"
         assert config.smtp_to == "user@example.com"
         assert config.tz_iana == "America/New_York"
+        assert config.arxiv_api_base == "http://arxiv-mirror.example.org"
         assert config.llm_api_key == "sk-1234"
         assert config.smtp_user == "matomeru"
         assert config.smtp_password == "secret"
@@ -254,6 +305,7 @@ class TestLoadRuntimeConfig:
 
         expected = str(Path.home() / ".local" / "state" / "matomeru" / "state.sqlite3")
         assert config.state_db_path == expected
+        assert config.arxiv_api_base == "http://export.arxiv.org"
 
     def test_missing_required_vars_reported_together(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Missing required env vars are reported together."""
@@ -291,6 +343,7 @@ class TestLoadProfileText:
             reddit_comments_per_post=20,
             arxiv_categories=[],
             arxiv_search_terms=[],
+            arxiv_max_results=100,
             notes_reddit_folder="",
             notes_arxiv_folder="",
         )
@@ -310,6 +363,7 @@ class TestLoadProfileText:
             reddit_comments_per_post=20,
             arxiv_categories=[],
             arxiv_search_terms=[],
+            arxiv_max_results=100,
             notes_reddit_folder="",
             notes_arxiv_folder="",
         )

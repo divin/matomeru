@@ -28,6 +28,7 @@ class AppConfig:
     reddit_comments_per_post: int
     arxiv_categories: list[str]
     arxiv_search_terms: list[str]
+    arxiv_max_results: int
     notes_reddit_folder: str
     notes_arxiv_folder: str
 
@@ -50,6 +51,7 @@ class RuntimeConfig:
     smtp_to: str
     tz_iana: str
     state_db_path: str
+    arxiv_api_base: str
 
 
 def load_app_config(path: str | None = None) -> AppConfig:
@@ -104,6 +106,11 @@ def load_app_config(path: str | None = None) -> AppConfig:
     arxiv = data.get("arxiv", {})
     arxiv_categories = arxiv.get("categories", [])
     arxiv_search_terms = arxiv.get("search_terms", [])
+    arxiv_max_results = arxiv.get("max_results", 100)
+    if not isinstance(arxiv_max_results, int) or isinstance(arxiv_max_results, bool) or arxiv_max_results < 1:
+        raise ConfigError(
+            f"Configuration file [arxiv] 'max_results' must be a positive integer, got: {arxiv_max_results!r}"
+        )
 
     # Extract notes section
     notes = data.get("notes", {})
@@ -118,6 +125,7 @@ def load_app_config(path: str | None = None) -> AppConfig:
         reddit_comments_per_post=comments_per_post,
         arxiv_categories=arxiv_categories,
         arxiv_search_terms=arxiv_search_terms,
+        arxiv_max_results=arxiv_max_results,
         notes_reddit_folder=notes_reddit_folder,
         notes_arxiv_folder=notes_arxiv_folder,
     )
@@ -146,6 +154,7 @@ def load_runtime_config() -> RuntimeConfig:
         SMTP_USER (empty string)
         SMTP_PASSWORD (empty string)
         MATOMERU_STATE_DB (~/.local/state/matomeru/state.sqlite3)
+        ARXIV_API_BASE (http://export.arxiv.org) - base URL of the arXiv API
 
     Raises:
         ConfigError: If any required environment variable is missing.
@@ -185,6 +194,7 @@ def load_runtime_config() -> RuntimeConfig:
         smtp_to=os.environ["SMTP_TO"],
         tz_iana=os.environ["TZ"],
         state_db_path=os.environ.get("MATOMERU_STATE_DB", state_db_default),
+        arxiv_api_base=os.environ.get("ARXIV_API_BASE", "http://export.arxiv.org"),
     )
 
 

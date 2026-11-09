@@ -1,6 +1,8 @@
-"""Pydantic data models for Reddit items fetched from the Sagashi MCP server."""
+"""Pydantic data models for Reddit and arXiv items."""
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -63,3 +65,25 @@ class ThreadBatch(BaseModel):
 
     threads: list[RedditThread] = Field(default_factory=list)
     errors: list[ThreadFetchError] = Field(default_factory=list)
+
+
+class ArxivPaper(BaseModel):
+    """A single arXiv paper as returned by the arXiv Atom API."""
+
+    arxiv_id: str
+    abs_url: str
+    pdf_url: str
+    title: str
+    abstract: str
+    authors: list[str]
+    categories: list[str]
+    primary_category: str
+    published: datetime
+    updated: datetime
+    announcement_hint: str | None = None
+
+
+class ArxivCandidateBatch(BaseModel):
+    """A batch of arXiv candidate papers collected in one run."""
+
+    papers: list[ArxivPaper] = Field(default_factory=list)
