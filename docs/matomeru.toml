@@ -17,13 +17,19 @@ posts_per_subreddit = 3
 comments_per_post = 20
 
 [arxiv]
-# arXiv categories to monitor
+# arXiv categories to monitor. At least one category or search term is
+# required; leaving both empty is a ConfigError.
 categories = ["cs.AI", "cs.LG"]
 
-# Optional search terms
+# Optional abstract search terms (quoted phrases); combined with
+# categories as (categories) AND (terms) when both are present.
 search_terms = ["large language model", "transformer"]
 
+# Maximum results requested from the arXiv API per run (default: 100)
+max_results = 100
+
 [notes]
-# Notes MCP folder paths (create these in your Notes vault)
+# Notes MCP folder paths (create these in your Notes vault, or let
+# Matomeru create them; empty disables notes delivery for that source)
 reddit_folder = "Matomeru/Reddit"
 arxiv_folder = "Matomeru/arXiv"
