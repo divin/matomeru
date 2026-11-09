@@ -62,7 +62,7 @@ Steps:
 4. **Create `matomeru.toml`** — copy the documented sample and fill in your values:
 
    ```sh
-   cp docs/matomeru.toml matomeru.toml
+   cp example.matomeru.toml matomeru.toml
    ```
 
    The `[profile] path` and `[reddit] subreddits` fields are required; see the configuration reference below. The file is looked up at the explicit `--config` path, the `MATOMERU_CONFIG` environment variable, or `matomeru.toml` in the current working directory, in that order.
@@ -70,10 +70,10 @@ Steps:
 5. **Create `.env`** — copy the template and fill in the TODO values:
 
    ```sh
-   cp .env.example .env
+   cp example.env .env
    ```
 
-   All variables (required and optional) are listed in `.env.example`; the required ones are enforced at startup.
+   All variables (required and optional) are listed in `example.env`; the required ones are enforced at startup.
 
 6. **Create the two notes folders** — create the folders named in `notes.reddit_folder` / `notes_arxiv_folder` in your notes vault. If they do not exist yet, Matomeru creates them automatically (`ensure_folder` is idempotent), so this step is optional.
 
@@ -205,6 +205,6 @@ The test suite currently contains **192 tests** and passes.
 ## Documentation
 
 - [Implementation plan and decisions](PLAN.md)
-- [Configuration sample](docs/matomeru.toml)
-- [Environment variable template](.env.example)
+- [Configuration sample](example.matomeru.toml)
+- [Environment variable template](example.env)
 - [Reddit rate-limit research](docs/research/reddit-rate-limits.md)
