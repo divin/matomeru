@@ -11,6 +11,7 @@ dependencies = [
     "fastmcp>=2",
     "httpx>=0.28",
     "pydantic>=2",
+    "pydantic-ai>=1",
     "python-dotenv>=1.2.4",
 ]
 
