@@ -267,6 +267,9 @@ def stub_send_mail(
         recipients: list[str],
         message: EmailMessage,
     ) -> None:
+        html_part = next((p for p in message.iter_parts() if p.get_content_type() == "text/html"), None)
+        plain_part = next((p for p in message.iter_parts() if p.get_content_type() == "text/plain"), None)
+        body = str(plain_part.get_content()) if plain_part is not None else str(message.get_content())
         calls.append(
             {
                 "host": host,
@@ -276,7 +279,8 @@ def stub_send_mail(
                 "sender": sender,
                 "recipients": list(recipients),
                 "subject": message.get("Subject", ""),
-                "body": str(message.get_content()),
+                "body": body,
+                "html_body": str(html_part.get_content()) if html_part is not None else None,
             }
         )
         if fail:
@@ -523,6 +527,13 @@ class TestRedditSuccess:
         assert "Post 1" in note_body
         assert "Post 2" in note_body
         assert "Partial run" not in note_body
+
+        # Email also carried the HTML alternative with the same items
+        html_body = mail_calls[0]["html_body"]
+        assert html_body is not None
+        assert "<h1>Reddit digest" in str(html_body)
+        assert "Post 1" in str(html_body)
+        assert "Post 2" in str(html_body)
 
 
 def row_report_date(state_db: str, source: str) -> str:

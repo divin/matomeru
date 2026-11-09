@@ -182,3 +182,32 @@ class TestSendMail:
             )
         assert "super-secret-password" not in str(exc_info.value)
         assert "relay denied" in str(exc_info.value)
+
+
+HTML_BODY = "<html><body><h1>Reddit digest</h1><p>Hello &amp; goodbye</p></body></html>"
+
+
+class TestBuildDigestMessageHtml:
+    """Tests for the optional html_body alternative part."""
+
+    def test_html_body_produces_multipart_alternative(self) -> None:
+        message = build_digest_message(
+            sender="matomeru@example.com",
+            recipients=["a@example.com"],
+            subject="s",
+            body=BODY,
+            sent_at=SENT_AT,
+            html_body=HTML_BODY,
+        )
+        assert message.get_content_type() == "multipart/alternative"
+        parts = list(message.iter_parts())
+        assert [part.get_content_type() for part in parts] == ["text/plain", "text/html"]
+        assert parts[0].get_content().strip() == BODY.strip()
+        assert parts[1].get_content().strip() == HTML_BODY.strip()
+
+    def test_without_html_body_unchanged(self) -> None:
+        message = make_message()
+        assert message.get_content_type() == "text/plain"
+        assert message.get_content().strip() == BODY.strip()
+        assert list(message.iter_parts()) == []
+        assert not list(message.iter_attachments())

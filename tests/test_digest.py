@@ -10,7 +10,9 @@ from matomeru.digest import (
     REDDIT_NO_RESULTS,
     SCREENED_OUT_LINE,
     render_arxiv_digest,
+    render_arxiv_digest_html,
     render_reddit_digest,
+    render_reddit_digest_html,
 )
 from matomeru.llm import ArxivPaperSummary, RedditItemSummary
 from matomeru.models import ArxivPaper, RedditThread, ThreadFetchError
@@ -192,3 +194,173 @@ class TestAllFailedBody:
         body = render_arxiv_digest("2026-11-09", WINDOW, items=[], screened_out=0, fetch_errors=[], partial=False)
         assert "No relevant arXiv papers" in body
         assert "## Errors" not in body
+
+
+class TestRedditDigestHtml:
+    """Tests for render_reddit_digest_html (mirrors the text branching)."""
+
+    def test_happy_path_structure(self) -> None:
+        body = render_reddit_digest_html("2026-11-09", WINDOW, [(THREAD, SUMMARY)], [], partial=False)
+        assert body.startswith("<!DOCTYPE html>")
+        assert '<html lang="en">' in body
+        assert "<h1>Reddit digest — 2026-11-09</h1>" in body
+        assert "Window (UTC): 2026-11-08T12:00:00+00:00 → 2026-11-09T12:00:00+00:00" in body
+        assert "<h2>r/python — Thread title</h2>" in body
+        assert "<li" in body and "Score: 100" in body
+        assert "Author: alice" in body
+        assert '<a href="https://reddit.com/r/python/comments/a/">https://reddit.com/r/python/comments/a/</a>' in body
+        assert "4 comments" in body
+        assert "<h3>Summary:</h3>" in body
+        assert "The thread discusses X." in body
+        assert "<h3>Why relevant:</h3>" in body
+        assert "Matches the profile&#x27;s interest in X." in body
+        assert "<h2>Errors</h2>" not in body
+
+    def test_escapes_llm_slots_and_metadata(self) -> None:
+        craft = RedditThread(
+            id="t3_evil",
+            subreddit="python",
+            title="<script>alert('x')</script> & tildes",
+            score=1,
+            permalink="/r/python/comments/evil/?a=1&b=2",
+            num_comments=0,
+            author="<b>evil</b>",
+        )
+        crafted_summary = RedditItemSummary(
+            summary="Bad <script>alert(1)</script> & payload",
+            why_relevant="Why <em>not</em> & quotes \"double\" 'single'",
+        )
+        body = render_reddit_digest_html("2026-11-09", WINDOW, [(craft, crafted_summary)], [], partial=False)
+        # No raw markup from untrusted content may leak into the document.
+        assert "<script>" not in body
+        assert "<b>evil</b>" not in body
+        assert "&lt;script&gt;" in body
+        assert "&amp;" in body
+        # Escaped link href and visible text (query-string & escaped too).
+        assert (
+            '<a href="https://reddit.com/r/python/comments/evil/?a=1&amp;b=2">'
+            "https://reddit.com/r/python/comments/evil/?a=1&amp;b=2</a>" in body
+        )
+        assert "Bad &lt;script&gt;alert(1)&lt;/script&gt; &amp; payload" in body
+
+    def test_no_results_body(self) -> None:
+        body = render_reddit_digest_html("2026-11-09", WINDOW, [], [], partial=False)
+        assert REDDIT_NO_RESULTS in body
+        assert "<h2>r/" not in body
+        assert "<h2>Errors</h2>" not in body
+
+    def test_all_failed_body(self) -> None:
+        body = render_reddit_digest_html(
+            "2026-11-09",
+            WINDOW,
+            items=[],
+            fetch_errors=[ThreadFetchError(index=0, item="t3_abc", error="Connection error.")],
+            partial=True,
+        )
+        assert "No posts matched" not in body
+        assert "none could be summarized" in body
+        assert "<h2>Errors</h2>" in body
+        assert "<li>t3_abc: Connection error.</li>" in body
+
+    def test_errors_section_escapes_entries(self) -> None:
+        errors = [ThreadFetchError(index=0, item="<t3_x>", error="boom & gone")]
+        body = render_reddit_digest_html("2026-11-09", WINDOW, [(THREAD, SUMMARY)], errors, partial=False)
+        assert "<h2>Errors</h2>" in body
+        assert "<li>&lt;t3_x&gt;: boom &amp; gone</li>" in body
+
+    def test_partial_paragraph_is_final(self) -> None:
+        body = render_reddit_digest_html("2026-11-09", WINDOW, [], [], partial=True)
+        assert '<p style="font-weight: bold; color: #b45309;">' in body
+        assert PARTIAL_LINE in body
+        assert body.rstrip("\n").endswith("</html>")
+        before_body_close = body.split("</body>")[0]
+        assert before_body_close.rstrip().endswith(f'<p style="font-weight: bold; color: #b45309;">{PARTIAL_LINE}</p>')
+
+    def test_differs_from_text_output(self) -> None:
+        text = render_reddit_digest("2026-11-09", WINDOW, [(THREAD, SUMMARY)], [], partial=False)
+        html_out = render_reddit_digest_html("2026-11-09", WINDOW, [(THREAD, SUMMARY)], [], partial=False)
+        assert html_out != text
+
+    def test_self_contained_no_external_resources(self) -> None:
+        body = render_reddit_digest_html("2026-11-09", WINDOW, [(THREAD, SUMMARY)], [], partial=False)
+        assert "http://image" not in body
+        assert "<script" not in body
+        assert "<img" not in body
+
+
+class TestArxivDigestHtml:
+    """Tests for render_arxiv_digest_html (mirrors the text branching)."""
+
+    def test_happy_path_structure(self) -> None:
+        body = render_arxiv_digest_html("2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False)
+        assert body.startswith("<!DOCTYPE html>")
+        assert "<h1>arXiv digest — 2026-11-09</h1>" in body
+        assert "<h2>A Study of Y</h2>" in body
+        assert "Authors: Alice, Bob" in body
+        assert "Categories: cs.AI, cs.LG" in body
+        assert '<a href="https://arxiv.org/abs/2601.00001">https://arxiv.org/abs/2601.00001</a>' in body
+        assert "<h3>Summary:</h3>" in body
+        assert "The paper studies Y." in body
+        assert "<h3>Why relevant:</h3>" in body
+        assert "Directly relevant to the profile." in body
+
+    def test_escapes_untrusted_content(self) -> None:
+        evil_paper = ArxivPaper(
+            arxiv_id="2601.00002",
+            abs_url="https://arxiv.org/abs/2601.00002?x=1&y=2",
+            pdf_url="https://arxiv.org/pdf/2601.00002",
+            title="Evil <script> & Paper",
+            abstract="Abstract.",
+            authors=["<b>Eve</b>"],
+            categories=["cs.AI"],
+            primary_category="cs.AI",
+            published=datetime(2026, 11, 8, 12, 0, 0, tzinfo=timezone.utc),
+            updated=datetime(2026, 11, 8, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        evil_summary = ArxivPaperSummary(
+            summary="Payload <script>alert(1)</script> & more",
+            why_relevant="Why & <em>why</em>",
+        )
+        body = render_arxiv_digest_html("2026-11-09", WINDOW, [(evil_paper, evil_summary)], 0, [], partial=False)
+        assert "<script>" not in body
+        assert "&lt;script&gt;" in body
+        assert "&lt;b&gt;Eve&lt;/b&gt;" in body
+        assert 'href="https://arxiv.org/abs/2601.00002?x=1&amp;y=2"' in body
+
+    def test_no_results_body(self) -> None:
+        body = render_arxiv_digest_html("2026-11-09", WINDOW, [], 0, [], partial=False)
+        assert ARXIV_NO_RESULTS in body
+        assert "<h2>Errors</h2>" not in body
+
+    def test_all_failed_body(self) -> None:
+        body = render_arxiv_digest_html(
+            "2026-11-09",
+            WINDOW,
+            items=[],
+            screened_out=0,
+            fetch_errors=["screening failed for 2601.00001: <boom> & gone"],
+            partial=True,
+        )
+        assert "No relevant arXiv papers" not in body
+        assert "none could be summarized" in body
+        assert "<h2>Errors</h2>" in body
+        assert "<li>screening failed for 2601.00001: &lt;boom&gt; &amp; gone</li>" in body
+
+    def test_screened_out_line(self) -> None:
+        body = render_arxiv_digest_html("2026-11-09", WINDOW, [], 7, [], partial=False)
+        assert f"<p>{SCREENED_OUT_LINE.format(count=7)}</p>" in body
+
+    def test_no_screened_out_line_when_zero(self) -> None:
+        body = render_arxiv_digest_html("2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False)
+        assert "screened out" not in body
+
+    def test_partial_after_screened_out(self) -> None:
+        body = render_arxiv_digest_html("2026-11-09", WINDOW, [], 3, [], partial=True)
+        screened_idx = body.index(SCREENED_OUT_LINE.format(count=3))
+        partial_idx = body.index(PARTIAL_LINE)
+        assert screened_idx < partial_idx
+
+    def test_differs_from_text_output(self) -> None:
+        text = render_arxiv_digest("2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False)
+        html_out = render_arxiv_digest_html("2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False)
+        assert html_out != text

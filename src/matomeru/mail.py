@@ -36,8 +36,9 @@ def build_digest_message(
     subject: str,
     body: str,
     sent_at: datetime,
+    html_body: str | None = None,
 ) -> EmailMessage:
-    """Build a plain-text digest email message.
+    """Build a digest email message (plain text, optionally with HTML).
 
     Args:
         sender: From address.
@@ -46,6 +47,10 @@ def build_digest_message(
         body: Plain-text body (the rendered digest).
         sent_at: Timestamp for the Date header (deterministic; use an
             aware datetime for an unambiguous header).
+        html_body: Optional HTML alternative. When provided, it is added as a
+            ``text/html`` alternative AFTER the plain-text part, so the
+            message becomes ``multipart/alternative`` with ``text/plain``
+            first and ``text/html`` second.
 
     Returns:
         The fully-formed :class:`email.message.EmailMessage` (no attachments).
@@ -56,6 +61,8 @@ def build_digest_message(
     message["Subject"] = subject
     message["Date"] = format_datetime(sent_at)
     message.set_content(body)
+    if html_body is not None:
+        message.add_alternative(html_body, subtype="html")
     return message
 
 

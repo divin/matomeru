@@ -41,7 +41,12 @@ from matomeru.config import (
     load_profile_text,
     load_runtime_config,
 )
-from matomeru.digest import render_arxiv_digest, render_reddit_digest
+from matomeru.digest import (
+    render_arxiv_digest,
+    render_arxiv_digest_html,
+    render_reddit_digest,
+    render_reddit_digest_html,
+)
 from matomeru.llm import (
     ArxivPaperSummary,
     ArxivRelevanceDecision,
@@ -68,6 +73,7 @@ class _DigestData:
     """Intermediate result of collection + LLM processing for one source."""
 
     body: str
+    html_body: str
     partial: bool
     item_count: int
     extra_summary: str
@@ -123,7 +129,14 @@ async def _pipeline_reddit(
         [*fetch_errors, *llm_failures],
         partial=partial,
     )
-    return _DigestData(body=body, partial=partial, item_count=len(items), extra_summary="")
+    html_body = render_reddit_digest_html(
+        report_date,
+        window,
+        items,
+        [*fetch_errors, *llm_failures],
+        partial=partial,
+    )
+    return _DigestData(body=body, html_body=html_body, partial=partial, item_count=len(items), extra_summary="")
 
 
 async def _pipeline_arxiv(
@@ -181,7 +194,14 @@ async def _pipeline_arxiv(
     partial = len(items) < len(included)
     screened_out = len(papers) - len(items)
     body = render_arxiv_digest(report_date, window, items, screened_out, fetch_errors, partial=partial)
-    return _DigestData(body=body, partial=partial, item_count=len(items), extra_summary=f"screened_out={screened_out}")
+    html_body = render_arxiv_digest_html(report_date, window, items, screened_out, fetch_errors, partial=partial)
+    return _DigestData(
+        body=body,
+        html_body=html_body,
+        partial=partial,
+        item_count=len(items),
+        extra_summary=f"screened_out={screened_out}",
+    )
 
 
 async def _deliver_and_finalize(
@@ -204,6 +224,7 @@ async def _deliver_and_finalize(
             subject=subject,
             body=digest.body,
             sent_at=window.end_utc,
+            html_body=digest.html_body,
         )
         await send_mail(
             runtime.smtp_host,
