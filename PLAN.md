@@ -133,10 +133,10 @@ Keep source-specific collection and normalization separate from the shared diges
 5. **Delivery and orchestration** — ✅ Done (5a `a03c71f`, 5b `fd94770`)
    - ✅ 5a: digest.py (code-owned templates for both sources), mail.py (deterministic headers, stdlib SMTP via thread, MailError without password), notes.py (NotesMcpClient with idempotent folder creation, deterministic note path `{folder}/{date}.md`); additive `RedditThread.author` and `NOTES_MCP_TOKEN` config amendment.
    - ✅ 5b: CLI orchestration — collect → sequential LLM → render → two independent destinations with best-effort delivery flags; Reddit per-item failures = partial; arXiv screening failure = conservative exclusion, summarization failure = partial; empty days deliver no-results outputs and complete; dry-run side-effect-free; 192 tests.
-6. **Verification and operations docs**
-   - Add unit/integration tests with no real network in the default test suite.
-   - Document `.env`, TOML, profile, cron setup, timezone alignment, state backup/reset, logging, and recovery from partial runs.
-   - Run a manual end-to-end smoke test against the user's Sagashi, Notes MCP, local LLM, and SMTP configuration before calling v1 operational.
+6. **Verification and operations docs** — docs done (`ecb5535`); live smoke test outstanding
+   - ✅ Network-free test suite throughout (192 tests; no real network in default runs).
+   - ✅ Operational handbook in README: config reference tables, cron setup, timezone alignment, state backup/reset, rerun/`--force` semantics, exit codes, partial-run behavior; `.env.example` template; `docs/matomeru.toml` aligned.
+   - ⬜ Remaining: manual end-to-end smoke test against the user's real Sagashi, Notes MCP, local LLM, and SMTP configuration (incl. validating the local LLM's structured-output contract) before calling v1 operational.
 
 ## Acceptance criteria for v1
 
