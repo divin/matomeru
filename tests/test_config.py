@@ -147,9 +147,7 @@ arxiv_folder = ""
             load_app_config(str(toml_path))
         assert "missing required [profile] section" in str(exc_info.value)
 
-    def test_env_var_path_resolution(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_var_path_resolution(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """MATOMERU_CONFIG env var is used when no explicit path."""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
@@ -173,9 +171,7 @@ arxiv_folder = ""
         config = load_app_config()
         assert config.config_path == str(toml_path)
 
-    def test_cwd_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cwd_fallback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Falls back to matomeru.toml in cwd when no path and no env var."""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
@@ -259,9 +255,7 @@ class TestLoadRuntimeConfig:
         expected = str(Path.home() / ".local" / "state" / "matomeru" / "state.sqlite3")
         assert config.state_db_path == expected
 
-    def test_missing_required_vars_reported_together(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_missing_required_vars_reported_together(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Missing required env vars are reported together."""
         env = {
             "SMTP_HOST": "smtp.example.com",
@@ -342,9 +336,7 @@ class TestConfigureLogging:
         assert "DEBUG" in captured.err
         assert "test message" in captured.err
 
-    def test_invalid_log_level_falls_back(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_invalid_log_level_falls_back(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Invalid log level falls back to INFO with warning."""
         import os
 
@@ -354,9 +346,7 @@ class TestConfigureLogging:
         captured = capsys.readouterr()
         assert "falling back to INFO" in captured.err
 
-    def test_default_log_level_is_info(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_default_log_level_is_info(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Default log level is INFO when env var is absent."""
         import os
 

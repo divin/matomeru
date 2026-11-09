@@ -78,13 +78,9 @@ def load_app_config(path: str | None = None) -> AppConfig:
         with config_file.open("rb") as f:
             data = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
-        raise ConfigError(
-            f"Failed to parse configuration file {config_file}: {e}"
-        ) from e
+        raise ConfigError(f"Failed to parse configuration file {config_file}: {e}") from e
     except OSError as e:
-        raise ConfigError(
-            f"Failed to read configuration file {config_file}: {e}"
-        ) from e
+        raise ConfigError(f"Failed to read configuration file {config_file}: {e}") from e
 
     # Extract required profile section
     if "profile" not in data:
@@ -99,9 +95,7 @@ def load_app_config(path: str | None = None) -> AppConfig:
     reddit = data.get("reddit", {})
     subreddits = reddit.get("subreddits", [])
     if not subreddits:
-        raise ConfigError(
-            "Configuration file [reddit] section missing required 'subreddits' field"
-        )
+        raise ConfigError("Configuration file [reddit] section missing required 'subreddits' field")
     posts_per_subreddit = reddit.get("posts_per_subreddit", 3)
     comments_per_post = reddit.get("comments_per_post", 20)
 
@@ -170,13 +164,9 @@ def load_runtime_config() -> RuntimeConfig:
 
     missing = [var for var in required_vars if not os.environ.get(var)]
     if missing:
-        raise ConfigError(
-            f"Missing required environment variables: {', '.join(missing)}"
-        )
+        raise ConfigError(f"Missing required environment variables: {', '.join(missing)}")
 
-    state_db_default = str(
-        Path.home() / ".local" / "state" / "matomeru" / "state.sqlite3"
-    )
+    state_db_default = str(Path.home() / ".local" / "state" / "matomeru" / "state.sqlite3")
 
     return RuntimeConfig(
         sagashi_mcp_url=os.environ["SAGASHI_MCP_URL"],

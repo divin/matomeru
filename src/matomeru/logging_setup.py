@@ -20,9 +20,7 @@ def configure_logging() -> None:
         level = valid_levels[level_name]
     else:
         level = logging.INFO
-        logging.getLogger(__name__).warning(
-            f"Invalid MATOMERU_LOG_LEVEL '{level_name}', falling back to INFO"
-        )
+        logging.getLogger(__name__).warning(f"Invalid MATOMERU_LOG_LEVEL '{level_name}', falling back to INFO")
 
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     handler = logging.StreamHandler()
