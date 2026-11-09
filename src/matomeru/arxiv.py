@@ -222,17 +222,19 @@ async def collect_arxiv(
     window: RunWindow,
     *,
     max_results: int = 100,
+    category_terms: dict[str, list[str]] | None = None,
 ) -> tuple[list[ArxivPaper], int]:
     """Collect arXiv candidate papers from the RSS announcement feeds.
 
     Fetches one feed per category (``<rss_base>/rss/<category>``), parses the
     current announcement batch (new submissions, cross-lists, replacements),
-    deduplicates across categories by base arXiv id, applies the search-terms
-    prefilter and the announcement-stamp window filter, sorts by announcement
-    time descending, and truncates to ``max_results``.
+    applies that feed's selector terms, deduplicates across categories by
+    base arXiv id, applies the announcement-stamp window filter, sorts by
+    announcement time descending, and truncates to ``max_results``.
 
-    Processing order: collect all -> dedupe -> search_terms filter ->
-    window filter -> sort by published desc -> truncate to max_results.
+    Processing order: collect per feed -> per-feed selector filter ->
+    dedupe -> window filter -> sort by published desc -> truncate to
+    max_results.
 
     Args:
         http: Async HTTP client (httpx.AsyncClient).
@@ -241,11 +243,30 @@ async def collect_arxiv(
             search_terms alone cannot retrieve anything.
         search_terms: Client-side prefilter terms; a paper is kept when ANY
             term case-insensitively matches its title or abstract. Embedded
-            quotes in terms are stripped. Empty list -> no filtering.
+            quotes in terms are stripped. Empty list -> no filtering. Serves
+            as the selector for every category without a category_terms
+            entry.
         window: The 24-hour run window. Papers whose announcement stamp
             (the feed pubDate) is strictly inside
             (window.start_utc, window.end_utc) are kept.
         max_results: Maximum number of papers to return (default 100).
+        category_terms: Optional per-category selector override mapping
+            category names (keys are raw, exactly as configured) to
+            search-term lists. Per feed, the selector is resolved as: if the
+            normalized category (whitespace and optional "cat:" prefix
+            stripped, lowercased) has an entry in this mapping, that list is
+            THE selector for the feed — an explicitly empty list means "keep
+            all papers in this category"; otherwise, if the raw category
+            string has an entry, that list is the selector; otherwise the
+            global ``search_terms`` list is the selector. Filtering is
+            applied per feed BEFORE cross-category dedupe, so a paper enters
+            the digest when it matches the selector of ANY feed it appears
+            in (first-wins dedupe must not let one category's terms veto a
+            paper another category's selector wants). A category_terms key
+            without a matching configured category is inert. Terms are
+            normalized like ``search_terms`` (quotes stripped, empties
+            dropped). None or empty mapping -> every feed uses the global
+            ``search_terms``.
 
     Returns:
         Tuple of (papers_in_window, fetched_total) where fetched_total is
@@ -262,6 +283,7 @@ async def collect_arxiv(
     if not categories:
         raise ConfigError("arXiv collection needs at least one category")
     normalized = [_normalize_category(category) for category in categories]
+    category_terms = category_terms or {}
 
     rss_base = _rss_base()
     headers = {"User-Agent": f"matomeru/{__version__} (self-hosted digest)"}
@@ -271,8 +293,14 @@ async def collect_arxiv(
     seen_base_ids: set[str] = set()
     failed = 0
 
-    for category in normalized:
-        url = f"{rss_base}/rss/{category}"
+    for category, normalized_cat in zip(categories, normalized):
+        # Per-feed selector: explicit entry for the normalized category
+        # (lowercased) wins, then an entry for the raw category string, then
+        # the global search_terms fallback. An explicitly empty list means
+        # "keep all papers in this category".
+        terms_for_feed = category_terms.get(normalized_cat.lower(), category_terms.get(category, search_terms))
+        feed_terms = _normalize_terms(terms_for_feed)
+        url = f"{rss_base}/rss/{normalized_cat}"
         logger.debug("Requesting arXiv RSS feed: %s", url)
         try:
             response = await http.get(url, headers=headers)
@@ -288,9 +316,13 @@ async def collect_arxiv(
         fetched_total += len(items)
         for item in items:
             try:
-                paper = _parse_item(item, primary_category=category)
+                paper = _parse_item(item, primary_category=normalized_cat)
             except (ValueError, AttributeError, TypeError) as e:
                 logger.warning("Skipping malformed arXiv item %s: %s", _item_id_guess(item) or "<unknown>", e)
+                continue
+            # Per-feed selector filter runs BEFORE the shared dedupe set so
+            # that a paper kept by ANY feed's selector survives (first wins).
+            if feed_terms and not _matches_terms(paper, feed_terms):
                 continue
             base_id = _base_id(paper.arxiv_id)
             if base_id in seen_base_ids:
@@ -300,10 +332,6 @@ async def collect_arxiv(
 
     if failed == len(normalized):
         raise RuntimeError(f"all {len(normalized)} category feed(s) failed")
-
-    terms = _normalize_terms(search_terms)
-    if terms:
-        papers = [paper for paper in papers if _matches_terms(paper, terms)]
 
     papers = [paper for paper in papers if window.start_utc < paper.published < window.end_utc]
     papers.sort(key=lambda paper: paper.published, reverse=True)

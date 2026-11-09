@@ -166,6 +166,73 @@ Abstract: Announcement stamp equals window.end_utc.</description>
 """
 
 
+# Per-category selector fixtures: the cs.AI feed holds a "quantum" paper (X),
+# an unrelated paper (Z), and a cross-listed paper (Y) whose base id also
+# appears in the cs.LG feed. Used to exercise per-feed selector filtering
+# running BEFORE cross-category dedupe.
+CT_AI_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+  <channel>
+    <title>cs.AI updates on arXiv.org</title>
+    <pubDate>Mon, 09 Nov 2026 00:00:00 -0500</pubDate>
+  </channel>
+  <item>
+    <title>Quantum Widget Calibration</title>
+    <link>https://arxiv.org/abs/2611.20001</link>
+    <description>arXiv:2611.20001v1 Announce Type: new
+Abstract: Quantum widget calibration protocols for noisy devices.</description>
+    <guid isPermaLink="false">oai:arXiv.org:2611.20001v1</guid>
+    <category>cs.AI</category>
+    <pubDate>Mon, 09 Nov 2026 00:00:00 -0500</pubDate>
+    <arxiv:announce_type>new</arxiv:announce_type>
+    <dc:creator>Quinn Quantum</dc:creator>
+  </item>
+  <item>
+    <title>Unrelated Notes About Pottery</title>
+    <link>https://arxiv.org/abs/2611.20002</link>
+    <description>arXiv:2611.20002v1 Announce Type: new
+Abstract: Kiln temperature curves and glaze chemistry.</description>
+    <guid isPermaLink="false">oai:arXiv.org:2611.20002v1</guid>
+    <category>cs.AI</category>
+    <pubDate>Mon, 09 Nov 2026 00:00:00 -0500</pubDate>
+    <arxiv:announce_type>new</arxiv:announce_type>
+    <dc:creator>Paula Pottery</dc:creator>
+  </item>
+  <item>
+    <title>Cross-Listed Shared Paper</title>
+    <link>https://arxiv.org/abs/2611.20003</link>
+    <description>arXiv:2611.20003v1 Announce Type: cross
+Abstract: A paper cross-listed into both category feeds.</description>
+    <guid isPermaLink="false">oai:arXiv.org:2611.20003v1</guid>
+    <category>cs.AI</category>
+    <pubDate>Mon, 09 Nov 2026 00:00:00 -0500</pubDate>
+    <arxiv:announce_type>cross</arxiv:announce_type>
+    <dc:creator>Cross Poster</dc:creator>
+  </item>
+</rss>
+"""
+
+CT_LG_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+  <channel>
+    <title>cs.LG updates on arXiv.org</title>
+    <pubDate>Mon, 09 Nov 2026 00:00:00 -0500</pubDate>
+  </channel>
+  <item>
+    <title>Cross-Listed Shared Paper</title>
+    <link>https://arxiv.org/abs/2611.20003</link>
+    <description>arXiv:2611.20003v2 Announce Type: cross
+Abstract: A paper cross-listed into both category feeds.</description>
+    <guid isPermaLink="false">oai:arXiv.org:2611.20003v2</guid>
+    <category>cs.LG</category>
+    <pubDate>Mon, 09 Nov 2026 00:00:00 -0500</pubDate>
+    <arxiv:announce_type>cross</arxiv:announce_type>
+    <dc:creator>Cross Poster</dc:creator>
+  </item>
+</rss>
+"""
+
+
 def make_window() -> RunWindow:
     """Fixed 24-hour window: 2026-11-08 12:00 UTC to 2026-11-09 12:00 UTC."""
     return RunWindow(
@@ -433,6 +500,86 @@ class TestCollectArxiv:
 
         assert fetched == 5  # fetch unaffected
         assert papers == []
+
+    @pytest.mark.asyncio
+    async def test_category_terms_per_feed_filter_before_dedupe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cross-listed paper is kept when ANY feed's selector matches it.
+
+        cs.AI has explicit terms that only its own quantum paper matches;
+        cs.LG has an explicitly empty list (keep all). The shared paper Y
+        does not match cs.AI's terms, so it is dropped from that feed BEFORE
+        dedupe and survives via the cs.LG keep-all feed exactly once.
+        """
+        captured: list[httpx.Request] = []
+        monkeypatch.delenv("ARXIV_RSS_BASE", raising=False)
+
+        async with make_client(captured, {"/rss/cs.AI": CT_AI_FEED, "/rss/cs.LG": CT_LG_FEED}) as http:
+            papers, fetched = await collect_arxiv(
+                http,
+                ["cs.AI", "cs.LG"],
+                [],
+                make_window(),
+                category_terms={"cs.AI": ["quantum"], "cs.LG": []},
+            )
+
+        assert fetched == 4  # 3 items in cs.AI + 1 item in cs.LG
+        # X kept via cs.AI's selector; Z dropped; Y kept once via cs.LG's
+        # keep-all (its cs.AI occurrence was filtered before dedupe)
+        assert [p.arxiv_id for p in papers] == ["2611.20001v1", "2611.20003v2"]
+
+    @pytest.mark.asyncio
+    async def test_category_terms_absent_key_falls_back_to_global(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A category without a category_terms entry uses the global terms."""
+        captured: list[httpx.Request] = []
+        monkeypatch.delenv("ARXIV_RSS_BASE", raising=False)
+
+        async with make_client(captured, standard_feeds()) as http:
+            papers, _ = await collect_arxiv(
+                http,
+                ["cs.AI"],
+                ["robotic grasping"],
+                make_window(),
+                category_terms={"cs.LG": ["neural"]},
+            )
+
+        # cs.AI is absent from category_terms -> global search_terms apply
+        assert [p.arxiv_id for p in papers] == ["2611.07000v2"]
+
+    @pytest.mark.asyncio
+    async def test_category_terms_exact_raw_key_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An entry whose key exactly matches the raw category is the selector."""
+        captured: list[httpx.Request] = []
+        monkeypatch.delenv("ARXIV_RSS_BASE", raising=False)
+
+        async with make_client(captured, {"/rss/cs.AI": AI_FEED}) as http:
+            papers, _ = await collect_arxiv(
+                http,
+                ["cs.AI"],
+                [],
+                make_window(),
+                category_terms={"cs.AI": ["robotic grasping"]},
+            )
+
+        assert [p.arxiv_id for p in papers] == ["2611.07000v2"]
+
+    @pytest.mark.asyncio
+    async def test_category_terms_empty_list_keeps_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicitly empty list means "keep all papers in this category"."""
+        captured: list[httpx.Request] = []
+        monkeypatch.delenv("ARXIV_RSS_BASE", raising=False)
+
+        async with make_client(captured, {"/rss/cs.AI": AI_FEED}) as http:
+            papers, _ = await collect_arxiv(
+                http,
+                ["cs.AI"],
+                ["robotic grasping"],
+                make_window(),
+                category_terms={"cs.AI": []},
+            )
+
+        # The explicit empty list replaces the global terms entirely
+        assert len(papers) == 3
+        assert {p.arxiv_id for p in papers} == {"2611.08572v1", "2611.07000v2", "2611.06000v1"}
 
     @pytest.mark.asyncio
     async def test_window_filter_on_announcement_stamps(self, monkeypatch: pytest.MonkeyPatch) -> None:

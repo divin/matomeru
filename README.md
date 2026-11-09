@@ -130,7 +130,8 @@ Resolved in order: explicit `--config` path → `MATOMERU_CONFIG` env var → `.
 | `[reddit]` | `posts_per_subreddit` | optional | `3` | Number of top posts collected per subreddit. |
 | `[reddit]` | `comments_per_post` | optional | `20` | Number of top comments fetched per post. |
 | `[arxiv]` | `categories` | optional | `[]` | arXiv categories such as `"cs.AI"`; at least one category or search term must be set. |
-| `[arxiv]` | `search_terms` | optional | `[]` | Abstract search terms (quoted phrases); at least one category or search term must be set. |
+| `[arxiv]` | `search_terms` | optional | `[]` | Abstract search terms (quoted phrases); fallback selector for categories without a `category_terms` entry; at least one category or search term must be set. |
+| `[arxiv]` | `category_terms` | optional | `{}` | Per-category search-term overrides (`category = ["term", ...]`); an explicitly empty list keeps all papers of that category; keys without a matching category are inert. |
 | `[arxiv]` | `max_results` | optional | `100` | Maximum results requested from the arXiv API per run (positive integer). |
 | `[notes]` | `reddit_folder` | optional | empty | Vault folder for Reddit notes; empty disables notes delivery for Reddit. |
 | `[notes]` | `arxiv_folder` | optional | empty | Vault folder for arXiv notes; empty disables notes delivery for arXiv. |

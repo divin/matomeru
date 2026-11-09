@@ -11,6 +11,7 @@ from matomeru.config import (
     AppConfig,
     ConfigError,
     RuntimeConfig,
+    _parse_category_terms,
     load_app_config,
     load_profile_text,
     load_runtime_config,
@@ -148,6 +149,153 @@ arxiv_folder = ""
         with pytest.raises(ConfigError) as exc_info:
             load_app_config(str(toml_path))
         assert "max_results" in str(exc_info.value)
+
+    def test_arxiv_category_terms_happy_path(self, tmp_path: Path) -> None:
+        """[arxiv.category_terms] parses into a dict with raw keys kept as-is."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+path = "/home/user/profile.md"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = ["cs.AI", "cs.LG", "cs.CV"]
+search_terms = []
+
+[arxiv.category_terms]
+"cs.AI" = ["large language model", "agent"]
+"cat:cs.LG" = ["graph neural network"]
+"cs.CV" = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        config = load_app_config(str(toml_path))
+
+        # Keys are stored raw (no lowercasing, no cat: stripping)
+        assert config.arxiv_category_terms == {
+            "cs.AI": ["large language model", "agent"],
+            "cat:cs.LG": ["graph neural network"],
+            "cs.CV": [],
+        }
+
+    def test_arxiv_category_terms_default_empty(self, tmp_path: Path) -> None:
+        """Absent [arxiv.category_terms] section yields {}."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+path = "/home/user/profile.md"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        config = load_app_config(str(toml_path))
+        assert config.arxiv_category_terms == {}
+
+    def test_arxiv_category_terms_non_table(self, tmp_path: Path) -> None:
+        """A non-table category_terms raises ConfigError."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+path = "/home/user/profile.md"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+category_terms = "oops"
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "category_terms" in str(exc_info.value)
+
+    def test_arxiv_category_terms_value_not_list(self, tmp_path: Path) -> None:
+        """A non-list value raises ConfigError naming the key."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+path = "/home/user/profile.md"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[arxiv.category_terms]
+"cs.AI" = "transformer"
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "cs.AI" in str(exc_info.value)
+
+    def test_arxiv_category_terms_value_non_string_items(self, tmp_path: Path) -> None:
+        """A list with non-string items raises ConfigError naming the key."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+path = "/home/user/profile.md"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[arxiv.category_terms]
+"cs.AI" = ["transformer", 42]
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "cs.AI" in str(exc_info.value)
+
+    def test_arxiv_category_terms_non_string_key_rejected(self) -> None:
+        """A non-string key raises ConfigError naming the key.
+
+        TOML keys are always strings, so this is only reachable via the
+        parsing helper directly (defensive validation).
+        """
+        with pytest.raises(ConfigError) as exc_info:
+            _parse_category_terms({42: ["transformer"]})
+        assert "42" in str(exc_info.value)
+
+    def test_arxiv_category_terms_empty_key_rejected(self) -> None:
+        """An empty-string key raises ConfigError naming the key."""
+        with pytest.raises(ConfigError) as exc_info:
+            _parse_category_terms({"": ["transformer"]})
+        assert "''" in str(exc_info.value) or '""' in str(exc_info.value)
 
     def test_missing_toml_file(self, tmp_path: Path) -> None:
         """Missing TOML file raises ConfigError."""
@@ -366,6 +514,7 @@ class TestLoadProfileText:
             arxiv_categories=[],
             arxiv_search_terms=[],
             arxiv_max_results=100,
+            arxiv_category_terms={},
             notes_reddit_folder="",
             notes_arxiv_folder="",
         )
@@ -386,6 +535,7 @@ class TestLoadProfileText:
             arxiv_categories=[],
             arxiv_search_terms=[],
             arxiv_max_results=100,
+            arxiv_category_terms={},
             notes_reddit_folder="",
             notes_arxiv_folder="",
         )

@@ -28,6 +28,7 @@ class AppConfig:
     reddit_comments_per_post: int
     arxiv_categories: list[str]
     arxiv_search_terms: list[str]
+    arxiv_category_terms: dict[str, list[str]]
     arxiv_max_results: int
     notes_reddit_folder: str
     notes_arxiv_folder: str
@@ -111,6 +112,7 @@ def load_app_config(path: str | None = None) -> AppConfig:
         raise ConfigError(
             f"Configuration file [arxiv] 'max_results' must be a positive integer, got: {arxiv_max_results!r}"
         )
+    arxiv_category_terms = _parse_category_terms(arxiv.get("category_terms", {}))
 
     # Extract notes section
     notes = data.get("notes", {})
@@ -125,10 +127,34 @@ def load_app_config(path: str | None = None) -> AppConfig:
         reddit_comments_per_post=comments_per_post,
         arxiv_categories=arxiv_categories,
         arxiv_search_terms=arxiv_search_terms,
+        arxiv_category_terms=arxiv_category_terms,
         arxiv_max_results=arxiv_max_results,
         notes_reddit_folder=notes_reddit_folder,
         notes_arxiv_folder=notes_arxiv_folder,
     )
+
+
+def _parse_category_terms(raw: object) -> dict[str, list[str]]:
+    """Validate and copy the [arxiv.category_terms] table.
+
+    Keys are stored exactly as written (normalization of category names
+    happens in arxiv.py). Every key must be a non-empty string and every
+    value a list of strings; violations raise ConfigError naming the key.
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"Configuration file [arxiv] 'category_terms' must be a table, got: {raw!r}")
+    category_terms: dict[str, list[str]] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key:
+            raise ConfigError(
+                f"Configuration file [arxiv] 'category_terms' keys must be non-empty strings, got: {key!r}"
+            )
+        if not isinstance(value, list) or not all(isinstance(term, str) for term in value):
+            raise ConfigError(
+                f"Configuration file [arxiv] 'category_terms' entry {key!r} must be a list of strings, got: {value!r}"
+            )
+        category_terms[key] = list(value)
+    return category_terms
 
 
 def _optional_env(name: str) -> str | None:

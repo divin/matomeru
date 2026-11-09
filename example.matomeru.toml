@@ -21,9 +21,23 @@ comments_per_post = 20
 # required; leaving both empty is a ConfigError.
 categories = ["cs.AI", "cs.LG"]
 
-# Optional abstract search terms (quoted phrases); combined with
-# categories as (categories) AND (terms) when both are present.
+# Optional abstract search terms (quoted phrases). These act as the
+# fallback selector for every category that has no category_terms entry
+# (see below); when category_terms covers a category, its list replaces
+# these terms for that category's feed.
 search_terms = ["large language model", "transformer"]
+
+# Optional per-category search terms overriding the global search_terms.
+# Keys are category names written exactly as in `categories` (matching is
+# case-insensitive and tolerates surrounding whitespace and a "cat:"
+# prefix, but write keys plainly, e.g. "cs.AI"). A category with an entry
+# uses that list as its feed's selector; an explicitly empty list ([]) means
+# "keep all papers in this category". A category without an entry falls back
+# to the global search_terms. A key with no matching configured category is
+# inert (harmless, but does nothing).
+# [arxiv.category_terms]
+# cs.AI = ["large language model", "agent"]
+# cs.LG = []
 
 # Maximum results requested from the arXiv API per run (default: 100)
 max_results = 100
