@@ -162,7 +162,7 @@ def load_runtime_config() -> RuntimeConfig:
         SMTP_USER (empty string)
         SMTP_PASSWORD (empty string)
         MATOMERU_STATE_DB (~/.local/state/matomeru/state.sqlite3)
-        ARXIV_API_BASE (None) - override for the arXiv API base URL (testing) (http://export.arxiv.org) - base URL of the arXiv API
+        ARXIV_API_BASE (None) - override for the arXiv API base URL (testing) (https://export.arxiv.org) - base URL of the arXiv API
 
     Raises:
         ConfigError: If any required environment variable is missing.

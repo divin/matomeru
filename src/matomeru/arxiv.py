@@ -27,7 +27,7 @@ from matomeru.window import RunWindow
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ARXIV_API_BASE = "http://export.arxiv.org"
+DEFAULT_ARXIV_API_BASE = "https://export.arxiv.org"
 
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
@@ -154,7 +154,7 @@ async def collect_arxiv(
         max_results: Maximum number of results to request (default 100).
         api_base: Explicit API base URL override; when None, the
             ARXIV_API_BASE env var is consulted, defaulting to
-            http://export.arxiv.org. Callers that have a RuntimeConfig
+            https://export.arxiv.org. Callers that have a RuntimeConfig
             should pass runtime.arxiv_api_base here (config is the
             source of truth).
 

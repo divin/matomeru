@@ -116,7 +116,7 @@ All variables are loaded from `.env` in the working directory (via `python-doten
 | `SMTP_FROM` | required | — | Sender address (`From` header and envelope sender). |
 | `SMTP_TO` | required | — | Comma-separated recipient addresses. |
 | `TZ` | required | — | IANA timezone name (e.g. `Europe/Berlin`) used for the report date and local display. |
-| `ARXIV_API_BASE` | optional | `http://export.arxiv.org` | Base URL of the arXiv Atom API (override useful for testing). |
+| `ARXIV_API_BASE` | optional | `https://export.arxiv.org` | Base URL of the arXiv Atom API (override useful for testing). |
 | `MATOMERU_STATE_DB` | optional | `~/.local/state/matomeru/state.sqlite3` | Path to the SQLite state database. |
 | `MATOMERU_LOG_LEVEL` | optional | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`); invalid values fall back to `INFO` with a warning. |
 
