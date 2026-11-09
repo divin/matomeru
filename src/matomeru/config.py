@@ -52,7 +52,6 @@ class RuntimeConfig:
     smtp_to: str
     tz_iana: str
     state_db_path: str
-    arxiv_api_base: str | None
 
 
 def load_app_config(path: str | None = None) -> AppConfig:
@@ -162,7 +161,6 @@ def load_runtime_config() -> RuntimeConfig:
         SMTP_USER (empty string)
         SMTP_PASSWORD (empty string)
         MATOMERU_STATE_DB (~/.local/state/matomeru/state.sqlite3)
-        ARXIV_API_BASE (None) - override for the arXiv API base URL (testing) (https://export.arxiv.org) - base URL of the arXiv API
 
     Raises:
         ConfigError: If any required environment variable is missing.
@@ -203,7 +201,6 @@ def load_runtime_config() -> RuntimeConfig:
         smtp_to=os.environ["SMTP_TO"],
         tz_iana=os.environ["TZ"],
         state_db_path=os.environ.get("MATOMERU_STATE_DB", state_db_default),
-        arxiv_api_base=_optional_env("ARXIV_API_BASE"),
     )
 
 

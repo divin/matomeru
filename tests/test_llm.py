@@ -85,7 +85,6 @@ def runtime_config() -> RuntimeConfig:
         smtp_to="d@e.f",
         tz_iana="Asia/Tokyo",
         state_db_path="state.db",
-        arxiv_api_base="http://export.arxiv.org/api/query",
     )
 
 

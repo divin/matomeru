@@ -69,7 +69,12 @@ class ThreadBatch(BaseModel):
 
 
 class ArxivPaper(BaseModel):
-    """A single arXiv paper as returned by the arXiv Atom API."""
+    """A single arXiv paper as collected from the arXiv RSS announcement feed.
+
+    For RSS-collected papers, ``published`` and ``updated`` both carry the
+    feed's announcement stamp (the RFC 2822 pubDate converted to UTC), not
+    the paper's original submission or revision timestamps.
+    """
 
     arxiv_id: str
     abs_url: str

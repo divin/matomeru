@@ -207,7 +207,6 @@ def stub_collect_arxiv(
         window: object,
         *,
         max_results: int = 100,
-        api_base: str | None = None,
     ) -> tuple[list[ArxivPaper], int]:
         if fail:
             raise httpx.ConnectError("arxiv unreachable")

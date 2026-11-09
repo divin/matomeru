@@ -1,22 +1,31 @@
-"""arXiv candidate retrieval via the official arXiv Atom API.
+"""arXiv candidate retrieval via the per-category RSS announcement feeds.
 
-Fetches recently submitted papers matching configured categories and/or
-abstract search terms, filters them against the 24-hour run window, and
-returns ArxivPaper models for downstream relevance screening.
+Fetches the current announcement batch for each configured category from
+``https://rss.arxiv.org/rss/<category>``. The RSS feed contains exactly the
+papers announced in the current cycle (new submissions, cross-lists, and
+replacements), so no query building or server-side filtering is needed.
 
-Note on arXiv's announcement cycle: announcements happen Sun-Thu around
-20:00 ET, and the /list/<cat>/new pages reflect that cycle. A freshly
-announced paper can have a ``published`` date days earlier, so the window
-filter uses the newest stamp (``updated`` if it is after ``published``,
-otherwise ``published``) to decide whether a paper is in-window.
+Note on arXiv's announcement cycle: the RSS ``pubDate`` on every item is the
+announcement stamp of the current batch (not the paper's original submission
+date). Weekend submissions announce on Monday while keeping Friday stamps in
+the Atom API, which is why collection is based on announcements: the feed's
+``pubDate`` IS the announcement time. For RSS-collected papers, both
+``published`` and ``updated`` therefore mean announcement time, and the
+window filter keeps papers whose announcement stamp falls strictly inside
+the run window. A normal daily run finds the whole batch in-window; a run
+made shortly after two announcements (a missed day) may contain older
+announcement stamps, which are correctly dropped.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
 
 import httpx
 
@@ -27,107 +36,183 @@ from matomeru.window import RunWindow
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ARXIV_API_BASE = "https://export.arxiv.org"
+DEFAULT_ARXIV_RSS_BASE = "https://rss.arxiv.org"
 
-_ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
+_DC_NS = "http://purl.org/dc/elements/1.1/"
+
+# Version suffix such as the "v1" in "2611.08572v1"; only matched when it
+# directly follows the dot-separated numeric part of an arXiv id.
+_VERSION_SUFFIX_RE = re.compile(r"(?P<base>\.\d+)v\d+$")
 
 
-def _build_search_query(categories: list[str], search_terms: list[str]) -> str:
-    """Build the arXiv search_query string from categories and search terms.
+def _rss_base() -> str:
+    """Resolve the arXiv RSS base URL (env override, else default).
 
-    - Both present: "(cat:X OR cat:Y) AND (abs:\\"t1\\" OR abs:\\"t2\\")"
-    - Categories only: "cat:X OR cat:Y"
-    - Terms only: "abs:\\"t1\\" OR abs:\\"t2\\""
-    - Neither: ConfigError.
-
-    Embedded double quotes in search terms are stripped before quoting.
+    Uses ``or`` so an explicitly empty ARXIV_RSS_BASE falls back to the
+    default instead of producing an invalid URL.
     """
-    if not categories and not search_terms:
-        raise ConfigError("arXiv retrieval needs at least one category or search term")
-
-    cat_part = " OR ".join(f"cat:{c}" for c in categories) if categories else ""
-    terms = [t.replace('"', "").strip() for t in search_terms]
-    terms = [t for t in terms if t]
-    term_part = " OR ".join(f'abs:"{t}"' for t in terms) if terms else ""
-
-    if cat_part and term_part:
-        return f"({cat_part}) AND ({term_part})"
-    return cat_part or term_part
-
-
-def _api_base(api_base: str | None = None) -> str:
-    """Resolve the arXiv API base URL (explicit override, else env, else default)."""
-    base = api_base or os.environ.get("ARXIV_API_BASE") or DEFAULT_ARXIV_API_BASE
+    base = os.environ.get("ARXIV_RSS_BASE") or DEFAULT_ARXIV_RSS_BASE
     return base.rstrip("/")
 
 
-def _parse_utc(text: str) -> datetime:
-    """Parse an Atom timestamp like 2026-11-08T20:00:00-05:00 into UTC."""
-    dt = datetime.fromisoformat(text.strip())
-    return dt.astimezone(timezone.utc)
+def _normalize_category(category: str) -> str:
+    """Validate and normalize a single arXiv category name.
+
+    Strips surrounding whitespace and an optional leading "cat:" prefix.
+    Rejects values containing spaces or quotes.
+
+    Raises:
+        ConfigError: If the category is empty or contains spaces/quotes.
+    """
+    value = category.strip()
+    if value.lower().startswith("cat:"):
+        value = value[4:].strip()
+    if not value:
+        raise ConfigError(f"invalid arXiv category: {category!r}")
+    if " " in value or '"' in value or "'" in value:
+        raise ConfigError(f"invalid arXiv category {category!r}: spaces and quotes are not allowed")
+    return value
 
 
-def _pdf_url(abs_url: str) -> str:
-    """Derive the PDF URL from an abstract URL (no version change)."""
+def _normalize_terms(search_terms: list[str]) -> list[str]:
+    """Prepare search terms for the client-side prefilter.
+
+    Strips embedded quotes and surrounding whitespace; drops empty terms.
+    """
+    terms = [t.replace('"', "").strip() for t in search_terms]
+    return [t for t in terms if t]
+
+
+def _base_id(arxiv_id: str) -> str:
+    """Strip the version suffix from an arXiv id (2611.08572v1 -> 2611.08572).
+
+    The suffix is removed only when it follows the dot-separated numeric
+    part, so ids without a version are left untouched.
+    """
+    return _VERSION_SUFFIX_RE.sub(r"\g<base>", arxiv_id)
+
+
+def _id_from_guid(guid: str) -> str | None:
+    """Extract the arXiv id from an RSS guid.
+
+    Handles the "oai:arXiv.org:2611.08572v1" form (take the part after the
+    last colon) as well as bare ids and permalink URLs.
+    """
+    candidate = guid.strip().rsplit(":", 1)[-1].strip()
+    return candidate or None
+
+
+def _id_from_link(link: str) -> str | None:
+    """Extract the arXiv id from an abstract URL (last path segment)."""
+    path = urlparse(link).path.rstrip("/")
+    candidate = path.rsplit("/", 1)[-1].strip()
+    return candidate or None
+
+
+def _pdf_url(abs_url: str, versioned_id: str) -> str:
+    """Derive the PDF URL from an abstract URL.
+
+    Uses the versioned id from the guid when available (e.g.
+    https://arxiv.org/pdf/2611.08572v1), otherwise keeps the versionless
+    link id (https://arxiv.org/pdf/2611.08572).
+    """
     marker = "/abs/"
     idx = abs_url.rfind(marker)
     if idx == -1:
         return abs_url
-    return abs_url[:idx] + "/pdf/" + abs_url[idx + len(marker) :]
+    pdf_base = abs_url[:idx] + "/pdf/"
+    if _VERSION_SUFFIX_RE.search(versioned_id):
+        return pdf_base + versioned_id
+    return pdf_base + abs_url[idx + len(marker) :]
 
 
-def _parse_entry(entry: ET.Element) -> ArxivPaper:
-    """Parse a single Atom <entry> into an ArxivPaper.
+def _extract_abstract(description: str) -> str:
+    """Extract the abstract text from an RSS item description.
+
+    The description starts with an "arXiv:<id> Announce Type: <type>" prefix
+    followed by an "Abstract:" marker; everything before (and including) the
+    first "Abstract:" marker is dropped and remaining whitespace (including
+    line breaks) is collapsed.
+    """
+    text = description.strip()
+    marker = "Abstract:"
+    idx = text.find(marker)
+    if idx != -1:
+        text = text[idx + len(marker) :]
+    return " ".join(text.split())
+
+
+def _parse_item(item: ET.Element, primary_category: str) -> ArxivPaper:
+    """Parse a single RSS <item> into an ArxivPaper.
+
+    The feed's channel is per-category, so the requested category is the
+    primary category of every item in it.
 
     Raises:
-        ValueError: If the entry is missing required fields or has
-            unparseable timestamps.
+        ValueError: If the item is missing required fields, has no parsable
+            arXiv id, or has an unparseable pubDate.
     """
-    abs_url = (entry.findtext(f"{{{_ATOM_NS}}}id") or "").strip()
-    title = " ".join((entry.findtext(f"{{{_ATOM_NS}}}title") or "").split())
-    abstract = " ".join((entry.findtext(f"{{{_ATOM_NS}}}summary") or "").split())
-    authors = [
-        (author.findtext(f"{{{_ATOM_NS}}}name") or "").strip() for author in entry.findall(f"{{{_ATOM_NS}}}author")
+    title = " ".join((item.findtext("title") or "").split())
+    link = (item.findtext("link") or "").strip()
+    guid = (item.findtext("guid") or "").strip()
+    pub_date_text = (item.findtext("pubDate") or "").strip()
+    if not title or not link or not pub_date_text:
+        raise ValueError("item missing required fields (title/link/pubDate)")
+
+    arxiv_id = _id_from_guid(guid) or _id_from_link(link)
+    if not arxiv_id:
+        raise ValueError("item has no parsable arXiv id (guid/link)")
+
+    try:
+        stamp = parsedate_to_datetime(pub_date_text)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise ValueError(f"unparseable pubDate {pub_date_text!r}") from e
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    stamp = stamp.astimezone(timezone.utc)
+
+    # The announcement stamp is the window-relevant time; published and
+    # updated both carry it (documented on the model).
+    authors = [author.strip() for author in (item.findtext(f"{{{_DC_NS}}}creator") or "").split(",") if author.strip()]
+    categories = [
+        category.strip()
+        for category in (element.text or "" for element in item.findall("category"))
+        if category.strip()
     ]
-    authors = [a for a in authors if a]
-    categories = [cat.get("term", "") for cat in entry.findall(f"{{{_ATOM_NS}}}category")]
-    categories = [c for c in categories if c]
-    primary_el = entry.find(f"{{{_ARXIV_NS}}}primary_category")
-    primary_category = primary_el.get("term", "") if primary_el is not None else ""
-    published_text = entry.findtext(f"{{{_ATOM_NS}}}published")
-    updated_text = entry.findtext(f"{{{_ATOM_NS}}}updated")
-    if not abs_url or not title or not published_text or not updated_text:
-        raise ValueError("entry missing required fields (id/title/published/updated)")
-    published = _parse_utc(published_text)
-    updated = _parse_utc(updated_text)
 
     announcement_hint: str | None = None
-    announced = entry.findtext(f"{{{_ARXIV_NS}}}announced")
-    comment = entry.findtext(f"{{{_ARXIV_NS}}}comment")
-    if announced and announced.strip():
-        announcement_hint = announced.strip()
-    elif comment and comment.strip():
-        announcement_hint = comment.strip()
+    announce_el = item.find(f"{{{_ARXIV_NS}}}announce_type")
+    if announce_el is not None and announce_el.text and announce_el.text.strip():
+        announcement_hint = f"announce_type={announce_el.text.strip()}"
 
     return ArxivPaper(
-        arxiv_id=abs_url.rstrip("/").rsplit("/", 1)[-1],
-        abs_url=abs_url,
-        pdf_url=_pdf_url(abs_url),
+        arxiv_id=arxiv_id,
+        abs_url=link,
+        pdf_url=_pdf_url(link, arxiv_id),
         title=title,
-        abstract=abstract,
+        abstract=_extract_abstract(item.findtext("description") or ""),
         authors=authors,
         categories=categories,
-        primary_category=primary_category or (categories[0] if categories else ""),
-        published=published,
-        updated=updated,
+        primary_category=primary_category,
+        published=stamp,
+        updated=stamp,
         announcement_hint=announcement_hint,
     )
 
 
-def _newest_stamp(paper: ArxivPaper) -> datetime:
-    """The window-relevant timestamp: newest of published/updated."""
-    return paper.updated if paper.updated > paper.published else paper.published
+def _item_id_guess(item: ET.Element) -> str:
+    """Best-effort id extraction for malformed-item warning logs."""
+    guid = (item.findtext("guid") or "").strip()
+    if guid:
+        return guid
+    return (item.findtext("link") or "").strip()
+
+
+def _matches_terms(paper: ArxivPaper, terms: list[str]) -> bool:
+    """Case-insensitive substring match of ANY term against title + abstract."""
+    haystack = f"{paper.title} {paper.abstract}".lower()
+    return any(term.lower() in haystack for term in terms)
 
 
 async def collect_arxiv(
@@ -137,67 +222,92 @@ async def collect_arxiv(
     window: RunWindow,
     *,
     max_results: int = 100,
-    api_base: str | None = None,
 ) -> tuple[list[ArxivPaper], int]:
-    """Collect arXiv candidate papers within the run window.
+    """Collect arXiv candidate papers from the RSS announcement feeds.
 
-    Makes a single polite request to the arXiv Atom API, sorted by
-    submittedDate descending, and keeps papers whose newest stamp
-    (updated if newer than published, else published) falls strictly
-    inside (window.start_utc, window.end_utc).
+    Fetches one feed per category (``<rss_base>/rss/<category>``), parses the
+    current announcement batch (new submissions, cross-lists, replacements),
+    deduplicates across categories by base arXiv id, applies the search-terms
+    prefilter and the announcement-stamp window filter, sorts by announcement
+    time descending, and truncates to ``max_results``.
+
+    Processing order: collect all -> dedupe -> search_terms filter ->
+    window filter -> sort by published desc -> truncate to max_results.
 
     Args:
         http: Async HTTP client (httpx.AsyncClient).
-        categories: arXiv categories such as "astro-ph.EP".
-        search_terms: Abstract search terms.
-        window: The 24-hour run window.
-        max_results: Maximum number of results to request (default 100).
-        api_base: Explicit API base URL override; when None, the
-            ARXIV_API_BASE env var is consulted, defaulting to
-            https://export.arxiv.org. Callers that have a RuntimeConfig
-            should pass runtime.arxiv_api_base here (config is the
-            source of truth).
+        categories: arXiv categories such as "cs.AI" (a "cat:" prefix is
+            tolerated and stripped). Required: RSS is per-category, so
+            search_terms alone cannot retrieve anything.
+        search_terms: Client-side prefilter terms; a paper is kept when ANY
+            term case-insensitively matches its title or abstract. Embedded
+            quotes in terms are stripped. Empty list -> no filtering.
+        window: The 24-hour run window. Papers whose announcement stamp
+            (the feed pubDate) is strictly inside
+            (window.start_utc, window.end_utc) are kept.
+        max_results: Maximum number of papers to return (default 100).
 
     Returns:
-        Tuple of (papers_in_window, fetched_total).
+        Tuple of (papers_in_window, fetched_total) where fetched_total is
+        the total number of items seen across all successfully fetched feeds.
 
     Raises:
-        ConfigError: If both categories and search_terms are empty.
-        httpx.HTTPError: On network/HTTP failure.
+        ConfigError: If categories is empty (even when search_terms are
+            present, since RSS retrieval is per-category), or if a category
+            contains spaces or quotes.
+        RuntimeError: If every category feed fails (matching the Reddit
+            total-failure semantics). Individual feed failures are isolated:
+            a WARNING is logged and the remaining categories still collect.
     """
-    search_query = _build_search_query(categories, search_terms)
-    url = f"{_api_base(api_base)}/api/query"
+    if not categories:
+        raise ConfigError("arXiv collection needs at least one category")
+    normalized = [_normalize_category(category) for category in categories]
+
+    rss_base = _rss_base()
     headers = {"User-Agent": f"matomeru/{__version__} (self-hosted digest)"}
 
-    logger.debug("Requesting arXiv API: %s (query=%s)", url, search_query)
-    response = await http.get(
-        url,
-        params={
-            "search_query": search_query,
-            "sortBy": "submittedDate",
-            "sortOrder": "descending",
-            "start": "0",
-            "max_results": str(max_results),
-        },
-        headers=headers,
-    )
-    response.raise_for_status()
-
-    root = ET.fromstring(response.text)
-    entries = root.findall(f"{{{_ATOM_NS}}}entry")
-    fetched_total = len(entries)
-
+    fetched_total = 0
     papers: list[ArxivPaper] = []
-    for entry in entries:
+    seen_base_ids: set[str] = set()
+    failed = 0
+
+    for category in normalized:
+        url = f"{rss_base}/rss/{category}"
+        logger.debug("Requesting arXiv RSS feed: %s", url)
         try:
-            paper = _parse_entry(entry)
-        except (ValueError, AttributeError, TypeError) as e:
-            entry_id = (entry.findtext(f"{{{_ATOM_NS}}}id") or "").strip()
-            logger.warning("Skipping malformed arXiv entry %s: %s", entry_id or "<unknown>", e)
+            response = await http.get(url, headers=headers)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+        except (httpx.HTTPError, ET.ParseError) as e:
+            failed += 1
+            logger.warning("arXiv RSS feed for %s failed: %s", category, e)
             continue
-        stamp = _newest_stamp(paper)
-        if window.start_utc < stamp < window.end_utc:
+        # The live feed places <item> elements as siblings of <channel>
+        # (classic RSS puts them inside); iter("item") covers both shapes.
+        items = list(root.iter("item"))
+        fetched_total += len(items)
+        for item in items:
+            try:
+                paper = _parse_item(item, primary_category=category)
+            except (ValueError, AttributeError, TypeError) as e:
+                logger.warning("Skipping malformed arXiv item %s: %s", _item_id_guess(item) or "<unknown>", e)
+                continue
+            base_id = _base_id(paper.arxiv_id)
+            if base_id in seen_base_ids:
+                continue
+            seen_base_ids.add(base_id)
             papers.append(paper)
 
-    logger.debug("arXiv: fetched=%d, in_window=%d", fetched_total, len(papers))
+    if failed == len(normalized):
+        raise RuntimeError(f"all {len(normalized)} category feed(s) failed")
+
+    terms = _normalize_terms(search_terms)
+    if terms:
+        papers = [paper for paper in papers if _matches_terms(paper, terms)]
+
+    papers = [paper for paper in papers if window.start_utc < paper.published < window.end_utc]
+    papers.sort(key=lambda paper: paper.published, reverse=True)
+    papers = papers[:max_results]
+
+    logger.debug("arXiv: fetched=%d, kept=%d", fetched_total, len(papers))
     return papers, fetched_total

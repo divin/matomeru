@@ -259,7 +259,6 @@ class TestLoadRuntimeConfig:
             "SMTP_FROM": "matomeru@example.com",
             "SMTP_TO": "user@example.com",
             "TZ": "America/New_York",
-            "ARXIV_API_BASE": "http://arxiv-mirror.example.org",
             "LLM_API_KEY": "sk-1234",
             "SMTP_USER": "matomeru",
             "SMTP_PASSWORD": "secret",
@@ -279,7 +278,6 @@ class TestLoadRuntimeConfig:
         assert config.smtp_from == "matomeru@example.com"
         assert config.smtp_to == "user@example.com"
         assert config.tz_iana == "America/New_York"
-        assert config.arxiv_api_base == "http://arxiv-mirror.example.org"
         assert config.llm_api_key == "sk-1234"
         assert config.smtp_user == "matomeru"
         assert config.smtp_password == "secret"
@@ -305,7 +303,6 @@ class TestLoadRuntimeConfig:
 
         expected = str(Path.home() / ".local" / "state" / "matomeru" / "state.sqlite3")
         assert config.state_db_path == expected
-        assert config.arxiv_api_base is None  # default resolves in collect_arxiv
         assert config.sagashi_mcp_token is None
         assert config.notes_mcp_token is None
 
@@ -482,30 +479,3 @@ class TestOptionalEnvVars:
         assert runtime.sagashi_mcp_token is None
         assert runtime.notes_mcp_token is None
         assert runtime.llm_api_key is None
-
-
-class TestArxivApiBaseEmptyEnv:
-    """An explicitly empty ARXIV_API_BASE must behave like unset (real-run finding)."""
-
-    def _full_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        values = {
-            "SAGASHI_MCP_URL": "http://sagashi/mcp",
-            "NOTES_MCP_URL": "http://notes/mcp",
-            "LLM_BASE_URL": "http://llm/v1",
-            "LLM_MODEL": "test-model",
-            "SMTP_HOST": "localhost",
-            "SMTP_PORT": "25",
-            "SMTP_FROM": "a@b.c",
-            "SMTP_TO": "d@e.f",
-            "TZ": "UTC",
-        }
-        for key, value in values.items():
-            monkeypatch.setenv(key, value)
-
-    def test_empty_arxiv_api_base_yields_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._full_env(monkeypatch)
-        monkeypatch.setenv("ARXIV_API_BASE", "")
-
-        runtime = load_runtime_config()
-
-        assert runtime.arxiv_api_base is None

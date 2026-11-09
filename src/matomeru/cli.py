@@ -149,7 +149,6 @@ async def _pipeline_arxiv(
             app.arxiv_search_terms,
             window,
             max_results=app.arxiv_max_results,
-            api_base=runtime.arxiv_api_base,
         )
     logger.info("collected %d arxiv paper(s) in window (fetched=%d)", len(papers), fetched_total)
 
