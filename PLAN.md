@@ -130,9 +130,9 @@ Keep source-specific collection and normalization separate from the shared diges
    - ✅ 4a: shared LLM layer (`pydantic-ai` 2.66.0, OpenAI-compatible endpoint from RuntimeConfig, no tools — slot-filling only), deterministic Reddit prompt builder with fixed sections and bounded truncation caps, `RedditItemSummary` structured output.
    - ✅ 4b: arXiv relevance screening (`ArxivRelevanceDecision`, conservative on uncertainty) + paper summaries (`ArxivPaperSummary`) reusing the same patterns; 3000-char abstract cap; ids/urls as reference metadata only.
    - Deferred to phase 6: validating structured-output behavior against the real local endpoint in the smoke test.
-5. **Delivery and orchestration** — in progress (5a committed `a03c71f`)
+5. **Delivery and orchestration** — ✅ Done (5a `a03c71f`, 5b `fd94770`)
    - ✅ 5a: digest.py (code-owned templates for both sources), mail.py (deterministic headers, stdlib SMTP via thread, MailError without password), notes.py (NotesMcpClient with idempotent folder creation, deterministic note path `{folder}/{date}.md`); additive `RedditThread.author` and `NOTES_MCP_TOKEN` config amendment.
-   - Next (5b): orchestration in the CLIs — collect → summarize/screen → render → deliver with state transitions (complete/fail/delivery flags), empty results, independent destinations, and `--force` reprocessing.
+   - ✅ 5b: CLI orchestration — collect → sequential LLM → render → two independent destinations with best-effort delivery flags; Reddit per-item failures = partial; arXiv screening failure = conservative exclusion, summarization failure = partial; empty days deliver no-results outputs and complete; dry-run side-effect-free; 192 tests.
 6. **Verification and operations docs**
    - Add unit/integration tests with no real network in the default test suite.
    - Document `.env`, TOML, profile, cron setup, timezone alignment, state backup/reset, logging, and recovery from partial runs.
