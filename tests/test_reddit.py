@@ -194,7 +194,7 @@ class TestCollectReddit:
         await collect_reddit(as_client(stub), ["python"], WINDOW, posts_per_subreddit=5)
         call = stub.list_calls[0]
         assert call["sort"] == "top"
-        assert call["time_filter"] == "all"
+        assert call["time_filter"] == "day"
         assert call["limit"] == 25  # min(100, posts_per_subreddit + 20)
         assert call["after"] == str(START_TS)
         assert call["before"] is None

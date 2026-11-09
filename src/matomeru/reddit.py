@@ -1,4 +1,4 @@
-"""Reddit collection: list recent hot posts, dedupe, fetch threads in one batch.
+"""Reddit collection: list the day's top posts, dedupe, fetch threads in one batch.
 
 This module contains collection logic only — no state writes, no LLM calls.
 Orchestration (window selection, run lifecycle, digest rendering) stays in a
@@ -28,11 +28,16 @@ async def collect_reddit(
 ) -> tuple[list[RedditThread], list[ThreadFetchError]]:
     """Collect top posts across subreddits within the run window.
 
-    For each subreddit the top listing is fetched with ``sort="top"``,
-    ``time_filter="all"`` and an ``after`` bound at the window start (Sagashi's
-    ``after`` is an exclusive created_utc bound in epoch seconds). Results are
-    additionally filtered client-side to ``(start_utc, end_utc)`` exclusive,
-    sorted by score descending and truncated to ``posts_per_subreddit``.
+    For each subreddit the top listing is fetched with ``sort="top"`` and
+    ``time_filter="day"`` (Reddit ranks the trailing ~24 hours server-side),
+    with an ``after`` bound at the window start (Sagashi's ``after`` is an
+    exclusive created_utc bound in epoch seconds). Results are additionally
+    filtered client-side to ``(start_utc, end_utc)`` exclusive, sorted by
+    score descending and truncated to ``posts_per_subreddit``.
+
+    Note: ``time_filter="all"`` would make the candidate pool the subreddit's
+    all-time top posts, which the 24-hour window filter would then empty —
+    the day filter is what provides fresh candidates.
 
     Posts are deduplicated across subreddits by id (first occurrence wins;
     duplicate source subreddits are logged). Threads for the surviving ids are
@@ -63,7 +68,7 @@ async def collect_reddit(
             listing = await client.list_subreddit_posts(
                 subreddit,
                 sort="top",
-                time_filter="all",
+                time_filter="day",
                 limit=min(100, posts_per_subreddit + LISTING_OVERFETCH),
                 after=str(start_ts),
             )
