@@ -37,6 +37,7 @@ class RuntimeConfig:
     """Runtime configuration from environment."""
 
     sagashi_mcp_url: str
+    sagashi_mcp_token: str | None
     notes_mcp_url: str
     llm_base_url: str
     llm_api_key: str | None
@@ -140,6 +141,7 @@ def load_runtime_config() -> RuntimeConfig:
               SMTP_HOST, SMTP_PORT, SMTP_FROM, SMTP_TO, TZ
 
     Optional with defaults:
+        SAGASHI_MCP_TOKEN (None) - bearer token for the Sagashi MCP server
         LLM_API_KEY (None)
         SMTP_USER (empty string)
         SMTP_PASSWORD (empty string)
@@ -170,6 +172,7 @@ def load_runtime_config() -> RuntimeConfig:
 
     return RuntimeConfig(
         sagashi_mcp_url=os.environ["SAGASHI_MCP_URL"],
+        sagashi_mcp_token=os.environ.get("SAGASHI_MCP_TOKEN"),
         notes_mcp_url=os.environ["NOTES_MCP_URL"],
         llm_base_url=os.environ["LLM_BASE_URL"],
         llm_api_key=os.environ.get("LLM_API_KEY"),
