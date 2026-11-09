@@ -58,7 +58,7 @@ def _build_search_query(categories: list[str], search_terms: list[str]) -> str:
 
 def _api_base(api_base: str | None = None) -> str:
     """Resolve the arXiv API base URL (explicit override, else env, else default)."""
-    base = api_base or os.environ.get("ARXIV_API_BASE", DEFAULT_ARXIV_API_BASE)
+    base = api_base or os.environ.get("ARXIV_API_BASE") or DEFAULT_ARXIV_API_BASE
     return base.rstrip("/")
 
 
