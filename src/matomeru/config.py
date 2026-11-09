@@ -40,6 +40,7 @@ class RuntimeConfig:
     sagashi_mcp_url: str
     sagashi_mcp_token: str | None
     notes_mcp_url: str
+    notes_mcp_token: str | None
     llm_base_url: str
     llm_api_key: str | None
     llm_model: str
@@ -150,6 +151,7 @@ def load_runtime_config() -> RuntimeConfig:
 
     Optional with defaults:
         SAGASHI_MCP_TOKEN (None) - bearer token for the Sagashi MCP server
+        NOTES_MCP_TOKEN (None) - bearer token for the Notes MCP server
         LLM_API_KEY (None)
         SMTP_USER (empty string)
         SMTP_PASSWORD (empty string)
@@ -183,6 +185,7 @@ def load_runtime_config() -> RuntimeConfig:
         sagashi_mcp_url=os.environ["SAGASHI_MCP_URL"],
         sagashi_mcp_token=os.environ.get("SAGASHI_MCP_TOKEN"),
         notes_mcp_url=os.environ["NOTES_MCP_URL"],
+        notes_mcp_token=os.environ.get("NOTES_MCP_TOKEN"),
         llm_base_url=os.environ["LLM_BASE_URL"],
         llm_api_key=os.environ.get("LLM_API_KEY"),
         llm_model=os.environ["LLM_MODEL"],

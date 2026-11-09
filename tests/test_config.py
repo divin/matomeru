@@ -306,6 +306,31 @@ class TestLoadRuntimeConfig:
         expected = str(Path.home() / ".local" / "state" / "matomeru" / "state.sqlite3")
         assert config.state_db_path == expected
         assert config.arxiv_api_base == "http://export.arxiv.org"
+        assert config.sagashi_mcp_token is None
+        assert config.notes_mcp_token is None
+
+    def test_notes_mcp_token_amendment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NOTES_MCP_TOKEN is optional and defaults to None (phase 5a amendment)."""
+        env = {
+            "SAGASHI_MCP_URL": "http://sagashi:8000",
+            "NOTES_MCP_URL": "http://notes:9008/mcp",
+            "LLM_BASE_URL": "http://localhost:11434/v1",
+            "LLM_MODEL": "llama3",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_FROM": "matomeru@example.com",
+            "SMTP_TO": "user@example.com",
+            "TZ": "America/New_York",
+        }
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+
+        config = load_runtime_config()
+        assert config.notes_mcp_token is None
+
+        monkeypatch.setenv("NOTES_MCP_TOKEN", "notes-secret")
+        config = load_runtime_config()
+        assert config.notes_mcp_token == "notes-secret"
 
     def test_missing_required_vars_reported_together(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Missing required env vars are reported together."""

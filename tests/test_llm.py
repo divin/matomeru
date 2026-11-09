@@ -73,6 +73,7 @@ def runtime_config() -> RuntimeConfig:
         sagashi_mcp_url="http://localhost:8000/mcp",
         sagashi_mcp_token=None,
         notes_mcp_url="http://localhost:8001/mcp",
+        notes_mcp_token=None,
         llm_base_url="http://localhost:9999/v1",
         llm_api_key=None,
         llm_model="test-model",

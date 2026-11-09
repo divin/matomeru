@@ -38,6 +38,7 @@ class RedditThread(BaseModel):
     subreddit: str = ""
     title: str = ""
     score: int = 0
+    author: str | None = None
     created_utc: float = 0.0
     permalink: str = ""
     selftext: str = ""

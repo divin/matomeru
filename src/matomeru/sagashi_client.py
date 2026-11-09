@@ -139,6 +139,7 @@ def _map_thread(thread: dict[str, Any]) -> RedditThread:
         subreddit=str(thread.get("subreddit") or ""),
         title=str(thread.get("title") or ""),
         score=int(thread.get("score") or 0),
+        author=thread.get("author"),
         created_utc=float(thread.get("created_utc") or 0.0),
         selftext=str(thread.get("selftext") or ""),
         num_comments=int(thread.get("num_comments") or 0),
