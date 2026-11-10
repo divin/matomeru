@@ -1,83 +1,55 @@
-# Matomeru
+# Matomeru 📰
 
-**Matomeru** (まとめる, “to bring together / organize”) is a cron-driven Python package that produces daily Reddit and arXiv digests with personalized summaries, emails each digest, and saves one dated note per source to a notes vault.
+**Matomeru (まとめる, “to bring together / organize”) is a cron-driven, self-hostable digest generator for Reddit and arXiv.** Every day it collects the posts and papers from a rolling 24-hour window, summarizes them against your personal Markdown interest profile using a local LLM, emails the result, and files one dated note per source into your notes vault. It is not a service: two standalone CLI commands, no Docker, built to be invoked by cron.
 
-## What it does
+AI tools were used during development.
 
-Every run collects the material from the **rolling 24-hour window** ending when the command starts, summarizes it against your Markdown interest profile using a local LLM, and delivers the result to two independent destinations — an email (SMTP) and a dated note (Notes MCP). Two sources, two commands, each with its own digest, email, and notes folder:
+## 🙋 Why Matomeru?
 
-- `uv run matomeru-reddit` — collects the configured top posts from selected subreddits, fetches their threads and top comments through the Sagashi MCP server, summarizes each post and its discussion, and explains its relevance to the profile.
-- `uv run matomeru-arxiv` — queries the official arXiv Atom API for new papers in configured categories / abstract search terms, screens each abstract against the profile, and summarizes the relevant papers.
+Feed readers show you everything; Matomeru reads for you. The interest profile and the summarization prompts are yours, the LLM runs on your own hardware, and the digest lands in the two places you actually read — your inbox and your notes vault. Reddit collection goes through [Sagashi](https://github.com/divin/sagashi), a self-hosted MCP server, and notes go through your own Notes MCP server, so no third-party service sees your reading list.
 
-The commands run independently. Matomeru is not a long-running service, does not require Docker, and is intended to be invoked by cron.
+## 🧭 How it works
 
-## How it works
-
+```mermaid
+flowchart LR
+    cron[Cron] --> R[matomeru-reddit]
+    cron --> A[matomeru-arxiv]
+    R -->|top posts + threads| S[Sagashi MCP]
+    A -->|new papers| X[arXiv Atom API]
+    S --> L[Local LLM via pydantic-ai]
+    X --> L
+    P[Interest profile<br/>profile.md] -. embedded in every prompt .-> L
+    L --> T[Deterministic digest templates]
+    T --> M[SMTP email]
+    T --> N[Notes MCP dated note]
+    T --> DB[(SQLite state)]
 ```
-cron ──▶ matomeru-reddit ──▶ Sagashi MCP (Reddit posts + threads) ─┐
-     └─▶ matomeru-arxiv   ──▶ arXiv Atom API (papers)             ─┤
-                                                                  ▼
-                                            local LLM via pydantic-ai
-                                            (structured output, no tools)
-                                                                  │
-                                                                  ▼
-                                   deterministic digest templates (code-owned)
-                                                                  │
-                        ┌─────────────────────────────────────────┤
-                        ▼                                         ▼
-                  SMTP (email)                        Notes MCP (dated note)
-```
+
+Two sources, two commands, each with its own digest, email, and notes folder:
+
+- `uv run matomeru-reddit` collects the configured top posts from selected subreddits, fetches their threads and top comments through the Sagashi MCP server, and summarizes each post and its discussion, explaining its relevance to the profile.
+- `uv run matomeru-arxiv` queries the official arXiv Atom API for new papers in configured categories and abstract search terms, screens each abstract against the profile, and summarizes the relevant papers.
 
 **The determinism principle.** Configuration owns everything structural: paths, folders, recipients, window boundaries, and the digest layout — templates live in code, not in the model. The LLM only fills text slots via structured output: `summary` and `why_relevant` for each Reddit thread, `summary` and `why_relevant` for each included arXiv paper, and the `include`/`reason` screening decision for arXiv papers. The agent registers no tools and never receives authority to act; prompt content is embedded purely as data with fixed truncation caps.
 
-**Conservative exclusion.** arXiv screening prompts instruct the model to decide `include=false` when uncertain. A screening call that *fails* (model or transport error) is also treated as excluded — the paper is left out rather than guessed into the digest. A Reddit thread whose summarization fails is excluded and recorded in the digest's Errors section.
+**Conservative exclusion.** arXiv screening prompts instruct the model to decide `include=false` when uncertain, and a screening call that *fails* (model or transport error) is also treated as excluded — a paper is left out rather than guessed into the digest. A Reddit thread whose summarization fails is likewise excluded and recorded in the digest's Errors section.
 
-## Setup
+## 🚀 Quick start
 
-Prerequisites:
+Prerequisites: [uv](https://docs.astral.sh/uv/) (provides Python 3.12), a running **Sagashi MCP** server (≥ 0.3.1, streamable HTTP), a running **Notes MCP** server (streamable HTTP) exposing `create_folder` / `create_note`, a **local OpenAI-compatible LLM endpoint** with structured-output support, and an **SMTP account**.
 
-- [uv](https://docs.astral.sh/uv/) and Python 3.12 (uv provides the interpreter).
-- A running **Sagashi** MCP server (≥ 0.3.1, streamable HTTP) exposing the Reddit collection tools.
-- A running **Notes MCP** server (streamable HTTP) exposing `create_folder` / `create_note`.
-- A **local OpenAI-compatible LLM endpoint** supporting chat completions with structured output.
-- An **SMTP account** for sending the digest emails.
-
-Steps:
-
-1. **Clone the repository**
+1. Clone and install:
 
    ```sh
    git clone <repository-url>
    cd matomeru
-   ```
-
-2. **Install dependencies**
-
-   ```sh
    uv sync
    ```
 
-3. **Create `profile.md`** — your Markdown interest profile. General interests plus per-source detail; it is embedded verbatim into every prompt.
-
-4. **Create `matomeru.toml`** — copy the documented sample and fill in your values:
-
-   ```sh
-   cp example.matomeru.toml matomeru.toml
-   ```
-
-   The `[profile] path` and `[reddit] subreddits` fields are required; see the configuration reference below. The file is looked up at the explicit `--config` path, the `MATOMERU_CONFIG` environment variable, or `matomeru.toml` in the current working directory, in that order.
-
-5. **Create `.env`** — copy the template and fill in the TODO values:
-
-   ```sh
-   cp example.env .env
-   ```
-
-   All variables (required and optional) are listed in `example.env`; the required ones are enforced at startup.
-
-6. **Create the two notes folders** — create the folders named in `notes.reddit_folder` / `notes_arxiv_folder` in your notes vault. If they do not exist yet, Matomeru creates them automatically (`ensure_folder` is idempotent), so this step is optional.
-
-7. **Verify with a dry run** — prints the computed window plan and exits 0 without touching state or the network:
+2. Write `profile.md` — your Markdown interest profile (general interests plus per-source detail); it is embedded verbatim into every prompt.
+3. Copy `example.matomeru.toml` to `matomeru.toml` and fill in your values. The `[profile] path` and `[reddit] subreddits` fields are required; see the [configuration reference](#%EF%B8%8F-configuration-reference). The file is looked up at the explicit `--config` path, the `MATOMERU_CONFIG` environment variable, or `matomeru.toml` in the current working directory, in that order.
+4. Copy `example.env` to `.env` and fill in the TODO values. All variables (required and optional) are listed there; the required ones are enforced at startup.
+5. Verify with a dry run — prints the computed window plan and exits 0 without touching state or the network:
 
    ```sh
    uv run matomeru-reddit --dry-run
@@ -85,16 +57,18 @@ Steps:
 
    Do the same for `matomeru-arxiv` if you use it.
 
-8. **First real run**
+6. First real run:
 
    ```sh
    uv run matomeru-reddit
    uv run matomeru-arxiv
    ```
 
-   Each run writes its note, sends its email, and records the run in the state database. Exit code 0 means the digest was delivered (or the run was skipped because it already completed); see Operations below.
+   Each run writes its note, sends its email, and records the run in the state database. Exit code 0 means the digest was delivered (or the run was skipped because it already completed).
 
-## Configuration reference
+Notes folders (`notes.reddit_folder` / `notes.arxiv_folder`) are created automatically on first use (`ensure_folder` is idempotent), so no manual setup is needed — though an empty folder value disables notes delivery for that source.
+
+## ⚙️ Configuration reference
 
 ### `.env` variables
 
@@ -121,8 +95,6 @@ All variables are loaded from `.env` in the working directory (via `python-doten
 
 ### `matomeru.toml`
 
-Resolved in order: explicit `--config` path → `MATOMERU_CONFIG` env var → `./matomeru.toml`.
-
 | Section | Key | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `[profile]` | `path` | required | — | Path to the Markdown interest profile. |
@@ -141,7 +113,7 @@ Notes on the arXiv section:
 - Both `categories` and `search_terms` empty is a **`ConfigError`** — retrieval needs at least one selector. The two combine as `(categories) AND (search terms)` when both are present.
 - `max_results` must be a positive integer or the run exits 1 with a `ConfigError`.
 
-## Cron setup
+## ⏰ Cron setup
 
 Run each command from cron, logging output to files:
 
@@ -155,9 +127,9 @@ Timezone notes:
 
 - **cron uses the server's timezone** — setting `TZ` in `.env` labels the report date but does not change *when* cron starts the command. Align the server's cron timezone with `TZ` in `.env` (e.g. run both from a server whose timezone matches).
 - The run window is a rolling 24 hours computed on UTC instants, independent of the run hour. Around a daylight-saving transition, two consecutive daily runs at the same local time are 23 or 25 elapsed hours apart, so the rolling window can briefly overlap the previous window or leave a one-hour gap. This is an accepted trade-off; items that straddle the boundary may appear twice or once.
-- A fresh daily run keyed by the local report date: if the previous run completed, it is skipped (see Operations). Use `--force` to reprocess.
+- Each daily run is keyed by the local report date: if the previous run completed, it is skipped (see below). Use `--force` to reprocess.
 
-## Operations
+## 🔁 Operations
 
 ### State database
 
@@ -190,7 +162,9 @@ Timezone notes:
 - arXiv screening failures do *not* mark the run partial (the paper is conservatively excluded), but they appear in the Errors section.
 - Destination failures are isolated: an email failure never prevents the note (and vice versa), but any failed destination makes the run exit 1 so the next cron invocation retries it.
 
-## Development
+## 🧪 Development
+
+Use Python 3.12 and [`uv`](https://docs.astral.sh/uv/):
 
 ```sh
 uv sync --dev
@@ -202,7 +176,7 @@ uv run pytest tests -q
 
 The test suite currently contains **192 tests** and passes.
 
-## Documentation
+## 📚 Documentation
 
 - [Implementation plan and decisions](PLAN.md)
 - [Configuration sample](example.matomeru.toml)
