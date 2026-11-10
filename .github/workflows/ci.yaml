@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
+      - name: Check types
+        run: uv run ty check .
+
+      - name: Check formatting and lint
+        run: |
+          uv run ruff format --check src tests
+          uv run ruff check --extend-ignore I src tests
+          uv run ruff check --select I src tests
+
+      - name: Run tests
+        run: uv run pytest tests -q

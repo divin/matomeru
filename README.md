@@ -164,17 +164,16 @@ Timezone notes:
 
 ## 🧪 Development
 
-Use Python 3.12 and [`uv`](https://docs.astral.sh/uv/):
+Use Python 3.12, [`uv`](https://docs.astral.sh/uv/), and [`just`](https://just.systems/man/en/):
 
 ```sh
-uv sync --dev
-uv run ruff format src tests
-uv run ruff check src tests
-uv run ty check .
-uv run pytest tests -q
+just sync  # Install the locked dev environment
+just       # Format, lint, and sort imports
+just check # Type, format, and lint checks
+just test  # Test suite
 ```
 
-The test suite currently contains **192 tests** and passes.
+The test suite currently contains **246 tests** and passes.
 
 ## 📚 Documentation
 

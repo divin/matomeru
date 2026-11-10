@@ -22,7 +22,7 @@ from matomeru.models import ArxivPaper, RedditThread, ThreadFetchError
 from matomeru.notes import NotesClientError
 from matomeru.sagashi_client import SagashiClientError
 from matomeru.state import get_run
-from matomeru.window import compute_run_window
+from matomeru.window import RunWindow, compute_run_window
 
 REQUIRED_ENV_VARS = [
     "SAGASHI_MCP_URL",
@@ -447,6 +447,18 @@ class TestMissingProfile:
 
 class TestSkipAndForce:
     """Skipped runs touch nothing; --force reprocesses."""
+
+    @pytest.fixture(autouse=True)
+    def pinned_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pin the run window to a fixed report date (2026-11-09) so these
+        tests are independent of the real clock."""
+        window = RunWindow(
+            start_utc=datetime(2026, 11, 8, 0, 0, tzinfo=UTC),
+            end_utc=datetime(2026, 11, 9, 0, 0, tzinfo=UTC),
+            report_date=datetime(2026, 11, 9, tzinfo=UTC).date(),
+            tz_name="UTC",
+        )
+        monkeypatch.setattr(cli, "compute_run_window", lambda tz_name, now=None: window)
 
     def test_skipped_path_exits_zero_without_running_pipeline(
         self, monkeypatch: pytest.MonkeyPatch, cli_env: Path, tmp_path: Path
