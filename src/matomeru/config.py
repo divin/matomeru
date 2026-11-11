@@ -226,7 +226,7 @@ def load_runtime_config() -> RuntimeConfig:
         smtp_from=os.environ["SMTP_FROM"],
         smtp_to=os.environ["SMTP_TO"],
         tz_iana=os.environ["TZ"],
-        state_db_path=os.environ.get("MATOMERU_STATE_DB", state_db_default),
+        state_db_path=_optional_env("MATOMERU_STATE_DB") or state_db_default,
     )
 
 

@@ -454,6 +454,28 @@ class TestLoadRuntimeConfig:
         assert config.sagashi_mcp_token is None
         assert config.notes_mcp_token is None
 
+    def test_state_db_empty_env_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicitly empty MATOMERU_STATE_DB falls back to the default path."""
+        env = {
+            "SAGASHI_MCP_URL": "http://sagashi:8000",
+            "NOTES_MCP_URL": "http://notes:9008/mcp",
+            "LLM_BASE_URL": "http://localhost:11434/v1",
+            "LLM_MODEL": "llama3",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_FROM": "matomeru@example.com",
+            "SMTP_TO": "user@example.com",
+            "TZ": "America/New_York",
+            "MATOMERU_STATE_DB": "",
+        }
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+
+        config = load_runtime_config()
+
+        expected = str(Path.home() / ".local" / "state" / "matomeru" / "state.sqlite3")
+        assert config.state_db_path == expected
+
     def test_notes_mcp_token_amendment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """NOTES_MCP_TOKEN is optional and defaults to None (phase 5a amendment)."""
         env = {
