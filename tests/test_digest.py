@@ -421,3 +421,60 @@ class TestFunnelLine:
 
         assert "<b>5</b>" not in body
         assert "Ranked &lt;b&gt;5&lt;/b&gt; threads" in body
+
+
+class TestArxivFunnelLine:
+    """Optional reranker funnel count header for the arXiv renderers."""
+
+    FUNNEL_LINE = "Ranked 87 papers, kept 12"
+
+    def test_funnel_line_after_window_before_items(self) -> None:
+        body = render_arxiv_digest(
+            "2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False, funnel_line=self.FUNNEL_LINE
+        )
+
+        assert self.FUNNEL_LINE in body
+        assert body.index("Window (UTC):") < body.index(self.FUNNEL_LINE) < body.index("## A Study of Y")
+
+    def test_funnel_line_none_is_byte_for_byte_v1(self) -> None:
+        body_without = render_arxiv_digest("2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False)
+        body_with = render_arxiv_digest(
+            "2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False, funnel_line=self.FUNNEL_LINE
+        )
+
+        # Adding the funnel line inserts exactly one line and changes nothing else.
+        assert body_with.replace(f"{self.FUNNEL_LINE}\n", "") == body_without
+        assert body_without == render_arxiv_digest(
+            "2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False, funnel_line=None
+        )
+
+    def test_funnel_line_before_no_results_body(self) -> None:
+        body = render_arxiv_digest("2026-11-09", WINDOW, [], 0, [], partial=False, funnel_line=self.FUNNEL_LINE)
+
+        assert self.FUNNEL_LINE in body
+        assert body.index(self.FUNNEL_LINE) < body.index(ARXIV_NO_RESULTS)
+
+    def test_html_funnel_line_after_window_paragraph(self) -> None:
+        body = render_arxiv_digest_html(
+            "2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False, funnel_line=self.FUNNEL_LINE
+        )
+
+        assert f"<p>{self.FUNNEL_LINE}</p>" in body
+        assert body.index('<p class="window">') < body.index(f"<p>{self.FUNNEL_LINE}</p>")
+        assert body.index(f"<p>{self.FUNNEL_LINE}</p>") < body.index("<h2>")
+
+    def test_html_funnel_line_none_is_byte_for_byte_v1(self) -> None:
+        body_without = render_arxiv_digest_html("2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False)
+        body_with = render_arxiv_digest_html(
+            "2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False, funnel_line=self.FUNNEL_LINE
+        )
+
+        assert body_with.replace(f"<p>{self.FUNNEL_LINE}</p>\n", "") == body_without
+
+    def test_html_funnel_line_is_escaped(self) -> None:
+        body = render_arxiv_digest_html(
+            "2026-11-09", WINDOW, [(PAPER, ARXIV_SUMMARY)], 0, [], partial=False, funnel_line="Ranked <b>5</b> papers"
+        )
+
+        assert "<b>5</b>" not in body
+        assert "Ranked &lt;b&gt;5&lt;/b&gt; papers" in body

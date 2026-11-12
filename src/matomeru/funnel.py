@@ -1,17 +1,24 @@
-"""Reranker funnel for Reddit threads (v1.1.0, milestone 7b).
+"""Reranker funnel for Reddit threads and arXiv papers (v1.1.0, milestones 7b/7c).
 
-Selection is deterministic code: the reranker scores every collected thread
+Selection is deterministic code: the reranker scores every collected item
 against each profile section (per-section queries — see
-:mod:`matomeru.reranker_client`), and the funnel keeps the **top X threads per
-subreddit** by score, with an optional global minimum-score floor applied
-*before* top-X selection. The funnel only selects; it never reorders — the
-kept threads stay in collection order (subreddit order, then as collected),
-so the digest ordering is unchanged from v1.
+:mod:`matomeru.reranker_client`).
 
-Scoring design (plan §Version 1.1.0): documents are ``title + selftext``
-(comments excluded), queries are the profile section texts as built by the
-caller (``f"{name}\\n\\n{text}"``). Each thread's score is its max across
-sections; the winning section name is recorded for calibration.
+- Reddit (:func:`funnel_reddit_threads`): keep the **top X threads per
+  subreddit** by score, with an optional global minimum-score floor applied
+  *before* top-X selection.
+- arXiv (:func:`funnel_arxiv_papers`): **threshold-based** — every paper whose
+  score is at least ``min_score`` (raw logit space, see the plan) is kept; no
+  top-N because daily arXiv inflow varies wildly.
+
+The funnel only selects; it never reorders — the kept items stay in collection
+order, so the digest ordering is unchanged from v1.
+
+Scoring design (plan §Version 1.1.0): documents are ``title + selftext`` for
+Reddit threads (comments excluded) and ``title + abstract`` for arXiv papers;
+queries are the profile section texts as built by the caller
+(``f"{name}\\n\\n{text}"``). Each item's score is its max across sections; the
+winning section name is recorded for calibration.
 
 Failure semantics: any exception from the reranker client propagates to the
 caller, which fails the run (fail-early, consistent with collection failures).
@@ -23,17 +30,25 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel
 
-from matomeru.models import RedditThread
+from matomeru.models import ArxivPaper, RedditThread
 from matomeru.reranker_client import RerankerClient
 
 logger = logging.getLogger(__name__)
 
+_ItemT = TypeVar("_ItemT")
+
 
 class ScoredItem(BaseModel):
-    """One scored item: its max score across sections plus the winning section."""
+    """One scored item: its max score across sections plus the winning section.
+
+    ``subreddit`` is the Reddit-specific name carried over from the Reddit
+    funnel; for arXiv papers it holds the paper's primary category (the row
+    schema is source-agnostic and the DB has no separate category column).
+    """
 
     item_id: str
     subreddit: str
@@ -42,15 +57,15 @@ class ScoredItem(BaseModel):
     kept: bool
 
 
-class FunnelOutcome(BaseModel):
-    """Result of one funnel pass over the collected threads.
+class FunnelOutcome(BaseModel, Generic[_ItemT]):
+    """Result of one funnel pass over the collected items.
 
-    ``kept``/``dropped`` partition the input threads (both in collection
+    ``kept``/``dropped`` partition the input items (both in collection
     order); ``scored`` holds one row per input item in input order.
     """
 
-    kept: list[RedditThread]
-    dropped: list[RedditThread]
+    kept: list[_ItemT]
+    dropped: list[_ItemT]
     scored: list[ScoredItem]
 
 
@@ -98,7 +113,7 @@ async def funnel_reddit_threads(
     min_score: float | None,
     report_date: str,
     source: str = "reddit",
-) -> FunnelOutcome:
+) -> FunnelOutcome[RedditThread]:
     """Score the collected threads and keep the top X per subreddit.
 
     Args:
@@ -113,8 +128,9 @@ async def funnel_reddit_threads(
         source: Source name, logged for run correlation.
 
     Returns:
-        A :class:`FunnelOutcome` with kept/dropped threads (both in
-        collection order) and one :class:`ScoredItem` row per input thread.
+        A :class:`FunnelOutcome[RedditThread]` with kept/dropped threads
+        (both in collection order) and one :class:`ScoredItem` row per input
+        thread.
     """
     if not threads:
         # Nothing collected: skip scoring entirely (an empty rerank request is
@@ -143,4 +159,67 @@ async def funnel_reddit_threads(
 
     kept = [thread for i, thread in enumerate(threads) if i in kept_indices]
     dropped = [thread for i, thread in enumerate(threads) if i not in kept_indices]
+    return FunnelOutcome(kept=kept, dropped=dropped, scored=scored)
+
+
+async def funnel_arxiv_papers(
+    papers: list[ArxivPaper],
+    sections: list[str],
+    client: RerankerClient,
+    *,
+    min_score: float,
+    report_date: str,
+    source: str = "arxiv",
+) -> FunnelOutcome[ArxivPaper]:
+    """Score the collected papers and keep every paper at or above the threshold.
+
+    Threshold-based selection (plan §Version 1.1.0): every paper whose score
+    (raw logit space) is ``>= min_score`` is kept; there is no top-N because
+    daily arXiv inflow varies wildly. The funnel only selects; it never
+    reorders — kept and dropped papers stay in collection order.
+
+    Args:
+        papers: Collected papers in collection order.
+        sections: Reranker query texts, one per profile section, built as
+            ``f"{name}\\n\\n{text}"`` by the caller.
+        client: The reranker client (any exception it raises propagates).
+        min_score: Required score threshold in raw logit space; papers scoring
+            at or above it are kept.
+        report_date: Report date string, logged for run correlation.
+        source: Source name, logged for run correlation.
+
+    Returns:
+        A :class:`FunnelOutcome[ArxivPaper]` with kept/dropped papers (both
+        in collection order) and one :class:`ScoredItem` row per input paper.
+        The row's ``item_id`` is the paper's ``arxiv_id`` and ``subreddit``
+        carries the paper's primary category (source-agnostic schema, see
+        :class:`ScoredItem`).
+    """
+    if not papers:
+        # Nothing collected: skip scoring entirely (an empty rerank request is
+        # a client error, and a quiet day must stay a quiet v1 day).
+        return FunnelOutcome(kept=[], dropped=[], scored=[])
+
+    logger.debug("funnel source=%s report_date=%s scoring %d document(s)", source, report_date, len(papers))
+    documents = [f"{paper.title}\n\n{paper.abstract}" for paper in papers]
+    pairs = await client.rerank_sections_with_argmax(sections, documents)
+    assert len(pairs) == len(papers), "reranker returned a score count mismatch"
+
+    scored = [
+        ScoredItem(
+            item_id=paper.arxiv_id,
+            subreddit=paper.primary_category,
+            score=score,
+            section=_section_name(sections[section_idx]),
+            kept=False,
+        )
+        for paper, (score, section_idx) in zip(papers, pairs, strict=True)
+    ]
+
+    kept_indices = {i for i, item in enumerate(scored) if item.score >= min_score}
+    for i in kept_indices:
+        scored[i].kept = True
+
+    kept = [paper for i, paper in enumerate(papers) if i in kept_indices]
+    dropped = [paper for i, paper in enumerate(papers) if i not in kept_indices]
     return FunnelOutcome(kept=kept, dropped=dropped, scored=scored)

@@ -16,7 +16,14 @@ import httpx
 import pytest
 
 import matomeru.cli as cli
-from matomeru.digest import REDDIT_NO_RESULTS, render_reddit_digest, render_reddit_digest_html
+from matomeru.digest import (
+    ARXIV_NO_RESULTS,
+    REDDIT_NO_RESULTS,
+    render_arxiv_digest,
+    render_arxiv_digest_html,
+    render_reddit_digest,
+    render_reddit_digest_html,
+)
 from matomeru.llm import ArxivPaperSummary, RedditItemSummary
 from matomeru.mail import MailError
 from matomeru.models import ArxivPaper, RedditThread, ThreadFetchError
@@ -230,10 +237,15 @@ def stub_screen_arxiv(
     monkeypatch: pytest.MonkeyPatch,
     decisions: dict[str, bool],
     fail_ids: set[str] | None = None,
+    called_ids: list[str] | None = None,
 ) -> None:
-    fail_ids = fail_ids or set()
+    """Stub matomeru.cli.screen_arxiv_paper with include flags per arxiv_id.
 
-    """Stub matomeru.cli.screen_arxiv_paper with include flags per arxiv_id."""
+    When ``called_ids`` is given, every screened paper id is appended to it in
+    call order (used to assert the LLM screening stage is bypassed when the
+    reranker funnel is active).
+    """
+    fail_ids = fail_ids or set()
 
     class _Decision:
         def __init__(self, include: bool) -> None:
@@ -241,6 +253,8 @@ def stub_screen_arxiv(
             self.reason = "because"
 
     async def fake_screen(agent: object, profile_text: str, paper: ArxivPaper) -> _Decision:
+        if called_ids is not None:
+            called_ids.append(paper.arxiv_id)
         if paper.arxiv_id in fail_ids:
             raise RuntimeError("screening exploded")
         return _Decision(decisions[paper.arxiv_id])
@@ -248,11 +262,19 @@ def stub_screen_arxiv(
     monkeypatch.setattr(cli, "screen_arxiv_paper", fake_screen)
 
 
-def stub_summarize_arxiv(monkeypatch: pytest.MonkeyPatch, fail_ids: set[str] | None = None) -> None:
-    """Stub matomeru.cli.summarize_arxiv_paper; fail for the given arxiv_ids."""
+def stub_summarize_arxiv(
+    monkeypatch: pytest.MonkeyPatch, fail_ids: set[str] | None = None, called_ids: list[str] | None = None
+) -> None:
+    """Stub matomeru.cli.summarize_arxiv_paper; fail for the given arxiv_ids.
+
+    When ``called_ids`` is given, every summarized paper id is appended to it
+    in call order.
+    """
     fail_ids = fail_ids or set()
 
     async def fake_summarize(agent: object, profile_text: str, paper: ArxivPaper) -> ArxivPaperSummary:
+        if called_ids is not None:
+            called_ids.append(paper.arxiv_id)
         if paper.arxiv_id in fail_ids:
             raise RuntimeError("LLM exploded")
         return ArxivPaperSummary(summary=f"Summary of {paper.title}", why_relevant="matches profile")
@@ -966,6 +988,17 @@ def rerank_rows(state_db: str) -> list[tuple]:
         conn.close()
 
 
+def rerank_rows_with_source(state_db: str) -> list[tuple]:
+    """All rerank_scores rows including the source column, ordered by item_id."""
+    conn = sqlite3.connect(state_db)
+    try:
+        return conn.execute(
+            "SELECT source, item_id, score, kept, section FROM rerank_scores ORDER BY item_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 class TestRedditRerankerFunnel:
     """Reranker funnel integration in _pipeline_reddit."""
 
@@ -1104,3 +1137,138 @@ class TestRedditRerankerFunnel:
         assert reranker_calls == []  # client never constructed
         assert "Ranked" not in saved[0][1]
         assert REDDIT_NO_RESULTS in saved[0][1]
+
+
+# --- arXiv reranker funnel (v1.1.0) --------------------------------------------
+
+
+class TestArxivRerankerFunnel:
+    """Reranker funnel integration in _pipeline_arxiv (replaces LLM screening)."""
+
+    def test_reranker_disabled_is_byte_for_byte_v1(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """No RERANKER_URL: the LLM screening stage runs and the digest is exactly v1."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        fixed_window = compute_run_window("UTC", now=datetime(2026, 11, 9, 12, 0, 0, tzinfo=UTC))
+        monkeypatch.setattr(cli, "compute_run_window", lambda tz: fixed_window)
+
+        papers = [make_paper(1), make_paper(2), make_paper(3)]
+        stub_collect_arxiv(monkeypatch, papers)
+        screened_ids: list[str] = []
+        stub_screen_arxiv(
+            monkeypatch, {"2611.00001": True, "2611.00002": False, "2611.00003": True}, called_ids=screened_ids
+        )
+        stub_summarize_arxiv(monkeypatch)
+        mail_calls = stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_arxiv(["--config", str(config_path)])
+
+        assert exit_code == 0
+        # v1 path: LLM screening ran for every collected paper.
+        assert screened_ids == ["2611.00001", "2611.00002", "2611.00003"]
+
+        included = [papers[0], papers[2]]
+        expected_items = [
+            (paper, ArxivPaperSummary(summary=f"Summary of {paper.title}", why_relevant="matches profile"))
+            for paper in included
+        ]
+        expected_body = render_arxiv_digest(
+            "2026-11-09", fixed_window, expected_items, screened_out=1, fetch_errors=[], partial=False
+        )
+        expected_html = render_arxiv_digest_html(
+            "2026-11-09", fixed_window, expected_items, screened_out=1, fetch_errors=[], partial=False
+        )
+        assert saved[0][1] == expected_body
+        assert str(mail_calls[0]["html_body"]) == expected_html
+        assert "Ranked" not in expected_body
+        assert rerank_rows(make_env(tmp_path)["MATOMERU_STATE_DB"]) == []
+
+    def test_reranker_enabled_bypasses_screening_and_persists_scores(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Threshold funnel replaces the LLM screening stage; scores persist with source 'arxiv'."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        monkeypatch.setenv("RERANKER_URL", RERANKER_URL)
+        state_db = make_env(tmp_path)["MATOMERU_STATE_DB"]
+
+        papers = [make_paper(1), make_paper(2), make_paper(3)]
+        stub_collect_arxiv(monkeypatch, papers)
+        screened_ids: list[str] = []
+        stub_screen_arxiv(monkeypatch, {}, called_ids=screened_ids)
+        scores = {"Paper 1": -1.0, "Paper 2": -9.0, "Paper 3": -6.0}
+        reranker_calls = stub_reranker(monkeypatch, scores)
+        called_ids: list[str] = []
+        stub_summarize_arxiv(monkeypatch, called_ids=called_ids)
+        mail_calls = stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_arxiv(["--config", str(config_path)])
+
+        assert exit_code == 0
+        # Zero LLM screening calls; kept papers (>= default -6.0) are summarized.
+        assert screened_ids == []
+        assert called_ids == ["2611.00001", "2611.00003"]
+
+        # One scoring call with one section query built as "name\n\ntext" and
+        # documents as "title\n\nabstract".
+        assert len(reranker_calls) == 2
+        assert reranker_calls[0][0] == "init"
+        assert reranker_calls[0][1] == RERANKER_URL
+        assert reranker_calls[1][1] == ["About me\n\nInterested in: exotic particles and slow loris conservation."]
+        assert reranker_calls[1][2] == [f"Paper {i}\n\nAbstract {i}" for i in range(1, 4)]
+
+        # Digest carries the deterministic funnel line; dropped papers are absent.
+        note_body = saved[0][1]
+        assert "Ranked 3 papers, kept 2" in note_body
+        assert "Paper 1" in note_body and "Paper 3" in note_body
+        assert "Paper 2" not in note_body
+        assert str(mail_calls[0]["html_body"]).count("Ranked 3 papers, kept 2") == 1
+
+        # Scores persisted with source "arxiv": one row per collected paper.
+        assert rerank_rows_with_source(state_db) == [
+            ("arxiv", "2611.00001", -1.0, 1, "About me"),
+            ("arxiv", "2611.00002", -9.0, 0, "About me"),
+            ("arxiv", "2611.00003", -6.0, 1, "About me"),
+        ]
+
+    def test_reranker_failure_fails_run_without_delivery(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Fail-early: a broken reranker aborts the run like a collection failure."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        monkeypatch.setenv("RERANKER_URL", RERANKER_URL)
+        state_db = make_env(tmp_path)["MATOMERU_STATE_DB"]
+
+        stub_collect_arxiv(monkeypatch, [make_paper(1)])
+        stub_reranker(monkeypatch, {}, fail=True)
+        stub_screen_arxiv(monkeypatch, {})
+        stub_summarize_arxiv(monkeypatch)
+        mail_calls = stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_arxiv(["--config", str(config_path)])
+
+        assert exit_code == 1
+        row = get_run(state_db, "arxiv", row_report_date(state_db, "arxiv"))
+        assert row is not None and row["status"] == "failed"
+        assert mail_calls == []
+        assert saved == []
+
+    def test_reranker_enabled_with_no_papers_skips_funnel(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An empty collection stays a quiet v1 no-results day even with the funnel on."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        monkeypatch.setenv("RERANKER_URL", RERANKER_URL)
+
+        stub_collect_arxiv(monkeypatch, [])
+        reranker_calls = stub_reranker(monkeypatch, {})
+        stub_screen_arxiv(monkeypatch, {})
+        stub_summarize_arxiv(monkeypatch)
+        stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_arxiv(["--config", str(config_path)])
+
+        assert exit_code == 0
+        assert reranker_calls == []  # client never constructed
+        assert "Ranked" not in saved[0][1]
+        assert ARXIV_NO_RESULTS in saved[0][1]

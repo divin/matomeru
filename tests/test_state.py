@@ -435,3 +435,24 @@ class TestRecordRerankScores:
         record_rerank_scores(db_path, "arxiv", "2026-11-12", [row])
 
         assert len(self._fetch_all(db_path)) == 3
+
+    def test_arxiv_rows_are_scoped_from_reddit_rows(self, tmp_path: Path) -> None:
+        """The same item id under different sources coexists (PK is source+date+item)."""
+        db_path = str(tmp_path / "test.db")
+        reddit_row = ScoredItem(item_id="t3_1", subreddit="python", score=-1.0, section="S", kept=True)
+        arxiv_row = ScoredItem(item_id="2611.00001", subreddit="cs.LG", score=-5.5, section="S", kept=False)
+        record_rerank_scores(db_path, "reddit", "2026-11-12", [reddit_row])
+        record_rerank_scores(db_path, "arxiv", "2026-11-12", [arxiv_row])
+        record_rerank_scores(db_path, "arxiv", "2026-11-13", [arxiv_row])
+
+        assert self._fetch_all(db_path) == [
+            ("arxiv", "2026-11-12", "2611.00001", -5.5, 0, "S"),
+            ("arxiv", "2026-11-13", "2611.00001", -5.5, 0, "S"),
+            ("reddit", "2026-11-12", "t3_1", -1.0, 1, "S"),
+        ]
+
+        # Re-scoring the same arxiv paper/date replaces only that row.
+        replaced = ScoredItem(item_id="2611.00001", subreddit="cs.LG", score=-4.0, section="S", kept=True)
+        record_rerank_scores(db_path, "arxiv", "2026-11-12", [replaced])
+        assert len(self._fetch_all(db_path)) == 3
+        assert ("arxiv", "2026-11-12", "2611.00001", -4.0, 1, "S") in self._fetch_all(db_path)

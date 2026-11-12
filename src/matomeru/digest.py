@@ -150,6 +150,7 @@ def render_arxiv_digest(
     fetch_errors: list[str],
     *,
     partial: bool,
+    funnel_line: str | None = None,
 ) -> str:
     """Render the arXiv digest markdown.
 
@@ -161,6 +162,9 @@ def render_arxiv_digest(
         fetch_errors: Fetch error strings, rendered in an Errors section.
         partial: Orchestration-supplied flag; when True a visible partial-run
             line is appended.
+        funnel_line: Optional reranker funnel count header (e.g.
+            "Ranked 87 papers, kept 12"), rendered after the window line;
+            ``None`` (funnel inactive) keeps the v1 output unchanged.
 
     Returns:
         The digest markdown string.
@@ -196,6 +200,7 @@ def render_arxiv_digest(
         all_failed_body=ARXIV_ALL_FAILED,
         errors=list(fetch_errors),
         trailing_lines=trailing,
+        funnel_line=funnel_line,
     )
 
 
@@ -364,6 +369,7 @@ def render_arxiv_digest_html(
     fetch_errors: list[str],
     *,
     partial: bool,
+    funnel_line: str | None = None,
 ) -> str:
     """Render the arXiv digest as a self-contained HTML document.
 
@@ -378,6 +384,9 @@ def render_arxiv_digest_html(
         fetch_errors: Fetch error strings, rendered in an Errors section.
         partial: Orchestration-supplied flag; when True a visible partial-run
             paragraph is appended.
+        funnel_line: Optional reranker funnel count header, rendered after
+            the window paragraph; ``None`` (funnel inactive) keeps the v1
+            output unchanged.
 
     Returns:
         The digest HTML string (no external resources, no images, no JS).
@@ -412,4 +421,5 @@ def render_arxiv_digest_html(
         all_failed_body=ARXIV_ALL_FAILED,
         errors=list(fetch_errors),
         trailing_blocks=trailing,
+        funnel_line=funnel_line,
     )

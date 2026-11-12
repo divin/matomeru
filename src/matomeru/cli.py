@@ -47,7 +47,7 @@ from matomeru.digest import (
     render_reddit_digest,
     render_reddit_digest_html,
 )
-from matomeru.funnel import funnel_reddit_threads
+from matomeru.funnel import funnel_arxiv_papers, funnel_reddit_threads
 from matomeru.llm import (
     ArxivPaperSummary,
     ArxivRelevanceDecision,
@@ -182,11 +182,16 @@ async def _pipeline_reddit(
 async def _pipeline_arxiv(
     app: AppConfig, runtime: RuntimeConfig, profile_text: str, window: RunWindow, report_date: str
 ) -> _DigestData:
-    """Collect arXiv papers, screen them, summarize the relevant ones, render.
+    """Collect arXiv papers, screen/funnel them, summarize the relevant, render.
 
-    Collection failure propagates (aborts the run). Screening failure is
-    treated as excluded: the conservative default already excludes the paper,
-    so it does NOT mark the run partial (an Errors-section entry is still
+    Collection failure propagates (aborts the run). When the reranker is
+    configured, the deterministic threshold funnel replaces the LLM screening
+    stage entirely (zero screening calls): a funnel failure propagates and
+    fails the run (fail-early, like collection failures), while dropped
+    papers are excluded by design and never mark the run partial. Without a
+    reranker URL the v1 behavior is unchanged: screening failure is treated
+    as excluded (the conservative default already excludes the paper, so it
+    does NOT mark the run partial — an Errors-section entry is still
     rendered). Summarization failure on an included paper excludes that item
     and marks the run partial.
     """
@@ -208,19 +213,54 @@ async def _pipeline_arxiv(
 
     fetch_errors: list[str] = []
     included: list[ArxivPaper] = []
-    for paper in papers:
-        try:
-            decision = await screen_arxiv_paper(agent, profile_text, paper)
-        except Exception as e:  # noqa: BLE001 - conservative default excludes the paper
-            logger.warning(
-                "screening failed for paper arxiv_id=%s: %s; treating as excluded (conservative default)",
-                paper.arxiv_id,
-                e,
-            )
-            fetch_errors.append(f"screening failed for {paper.arxiv_id}: {e}")
-            continue
-        if decision.include:
-            included.append(paper)
+
+    # Reranker funnel (v1.1.0): when configured, score every collected paper
+    # and keep those at or above the threshold for summarization — the LLM
+    # screening stage is bypassed entirely (zero screening calls). Funnel
+    # failures propagate and fail the run (fail-early, like collection
+    # failures); dropped papers are excluded by design and never mark the run
+    # partial. Without a reranker URL the v1 LLM screening stage runs as
+    # before.
+    funnel_line: str | None = None
+    if runtime.reranker_url is not None and papers:
+        collected_count = len(papers)
+        reranker = RerankerClient(runtime.reranker_url, runtime.reranker_token)
+        outcome = await funnel_arxiv_papers(
+            papers,
+            [f"{section.name}\n\n{section.text}" for section in app.profile_sections],
+            reranker,
+            min_score=app.reranker_arxiv_min_score,
+            report_date=report_date,
+        )
+        _best_effort_state(
+            "record rerank scores",
+            lambda: record_rerank_scores(runtime.state_db_path, "arxiv", report_date, outcome.scored),
+        )
+        for scored_item in outcome.scored:
+            if not scored_item.kept:
+                logger.debug(
+                    "funnel dropped paper id=%s category=%s score=%s",
+                    scored_item.item_id,
+                    scored_item.subreddit,
+                    scored_item.score,
+                )
+        logger.info("funnel kept %d of %d arxiv paper(s)", len(outcome.kept), collected_count)
+        included = outcome.kept
+        funnel_line = f"Ranked {collected_count} papers, kept {len(outcome.kept)}"
+    else:
+        for paper in papers:
+            try:
+                decision = await screen_arxiv_paper(agent, profile_text, paper)
+            except Exception as e:  # noqa: BLE001 - conservative default excludes the paper
+                logger.warning(
+                    "screening failed for paper arxiv_id=%s: %s; treating as excluded (conservative default)",
+                    paper.arxiv_id,
+                    e,
+                )
+                fetch_errors.append(f"screening failed for {paper.arxiv_id}: {e}")
+                continue
+            if decision.include:
+                included.append(paper)
 
     items: list[tuple[ArxivPaper, ArxivPaperSummary]] = []
     for paper in included:
@@ -233,8 +273,12 @@ async def _pipeline_arxiv(
 
     partial = len(items) < len(included)
     screened_out = len(papers) - len(items)
-    body = render_arxiv_digest(report_date, window, items, screened_out, fetch_errors, partial=partial)
-    html_body = render_arxiv_digest_html(report_date, window, items, screened_out, fetch_errors, partial=partial)
+    body = render_arxiv_digest(
+        report_date, window, items, screened_out, fetch_errors, partial=partial, funnel_line=funnel_line
+    )
+    html_body = render_arxiv_digest_html(
+        report_date, window, items, screened_out, fetch_errors, partial=partial, funnel_line=funnel_line
+    )
     return _DigestData(
         body=body,
         html_body=html_body,

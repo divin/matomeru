@@ -1,11 +1,13 @@
-"""Tests for the Reddit reranker funnel (network-free via a stubbed client)."""
+"""Tests for the reranker funnels: Reddit (7b) and arXiv (7c), network-free."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
-from matomeru.funnel import FunnelOutcome, ScoredItem, funnel_reddit_threads
-from matomeru.models import RedditThread
+from matomeru.funnel import FunnelOutcome, ScoredItem, funnel_arxiv_papers, funnel_reddit_threads
+from matomeru.models import ArxivPaper, RedditThread
 from matomeru.reranker_client import RerankerClient
 
 SECTIONS = ["Hardware\n\nInterested in ZFS and NAS builds.", "Cooking\n\nInterested in carbonara."]
@@ -44,6 +46,22 @@ class ExplodingRerankerClient(RerankerClient):
 
 def make_thread(i: int, subreddit: str = "python", score: int = 0) -> RedditThread:
     return RedditThread(id=f"t3_{i}", subreddit=subreddit, title=f"Post {i}", score=score)
+
+
+def make_arxiv_paper(i: int, primary_category: str = "cs.LG") -> ArxivPaper:
+    stamp = datetime(2026, 11, 8, 12, 0, 0, tzinfo=UTC)
+    return ArxivPaper(
+        arxiv_id=f"2611.{i:05d}",
+        abs_url=f"https://arxiv.org/abs/2611.{i:05d}",
+        pdf_url=f"https://arxiv.org/pdf/2611.{i:05d}",
+        title=f"Paper {i}",
+        abstract=f"Abstract {i}",
+        authors=["Alice", "Bob"],
+        categories=[primary_category],
+        primary_category=primary_category,
+        published=stamp,
+        updated=stamp,
+    )
 
 
 async def run_funnel(
@@ -204,3 +222,121 @@ class TestFunnelScoring:
     async def test_client_exception_propagates(self) -> None:
         with pytest.raises(RuntimeError, match="reranker exploded"):
             await run_funnel([make_thread(1)], client=ExplodingRerankerClient(), scores=[])
+
+
+async def run_arxiv_funnel(
+    papers: list[ArxivPaper],
+    scores: list[list[float]],
+    *,
+    min_score: float = -6.0,
+    client: RerankerClient | None = None,
+) -> tuple[FunnelOutcome[ArxivPaper], RerankerClient]:
+    stub: RerankerClient = StubRerankerClient(scores) if client is None else client
+    outcome = await funnel_arxiv_papers(
+        papers,
+        SECTIONS,
+        stub,
+        min_score=min_score,
+        report_date="2026-11-12",
+    )
+    return outcome, stub
+
+
+class TestArxivFunnelSelection:
+    """Threshold-based selection (score >= min_score, logit space)."""
+
+    @pytest.mark.asyncio
+    async def test_threshold_keeps_at_and_above_min_score(self) -> None:
+        papers = [make_arxiv_paper(1), make_arxiv_paper(2), make_arxiv_paper(3), make_arxiv_paper(4)]
+        # Logit space: -6.0 (exactly at the threshold) and above are kept.
+        scores = [[-5.0], [-6.0], [-6.5], [-11.0]]
+        outcome, _ = await run_arxiv_funnel(papers, scores, min_score=-6.0)
+
+        assert [p.arxiv_id for p in outcome.kept] == ["2611.00001", "2611.00002"]
+        assert [p.arxiv_id for p in outcome.dropped] == ["2611.00003", "2611.00004"]
+
+    @pytest.mark.asyncio
+    async def test_kept_and_dropped_preserve_collection_order(self) -> None:
+        # Scores out of order relative to collection order; the funnel only
+        # selects, it never reorders.
+        papers = [make_arxiv_paper(1), make_arxiv_paper(2), make_arxiv_paper(3), make_arxiv_paper(4)]
+        scores = [[-9.0], [-2.0], [-12.0], [-4.0]]
+        outcome, _ = await run_arxiv_funnel(papers, scores, min_score=-6.0)
+
+        assert [p.arxiv_id for p in outcome.kept] == ["2611.00002", "2611.00004"]
+        assert [p.arxiv_id for p in outcome.dropped] == ["2611.00001", "2611.00003"]
+
+    @pytest.mark.asyncio
+    async def test_no_top_x_cap_all_above_threshold_are_kept(self) -> None:
+        papers = [make_arxiv_paper(i) for i in range(1, 6)]
+        scores = [[-1.0], [-2.0], [-3.0], [-4.0], [-5.0]]
+        outcome, _ = await run_arxiv_funnel(papers, scores, min_score=-6.0)
+
+        assert [p.arxiv_id for p in outcome.kept] == ["2611.0000" + str(i) for i in range(1, 6)]
+        assert outcome.dropped == []
+
+    @pytest.mark.asyncio
+    async def test_empty_papers_skips_client(self) -> None:
+        stub = ExplodingRerankerClient()
+        outcome = await funnel_arxiv_papers([], SECTIONS, stub, min_score=-6.0, report_date="2026-11-12")
+        assert outcome.kept == []
+        assert outcome.dropped == []
+        assert outcome.scored == []
+
+    @pytest.mark.asyncio
+    async def test_client_exception_propagates(self) -> None:
+        with pytest.raises(RuntimeError, match="reranker exploded"):
+            await run_arxiv_funnel([make_arxiv_paper(1)], client=ExplodingRerankerClient(), scores=[])
+
+
+class TestArxivFunnelScoring:
+    """Scored rows, section attribution, and document format."""
+
+    @pytest.mark.asyncio
+    async def test_one_scored_row_per_paper_with_winning_section(self) -> None:
+        papers = [make_arxiv_paper(1), make_arxiv_paper(2)]
+        # Paper 1 wins on Hardware (section 0), paper 2 on Cooking (section 1).
+        scores = [[-2.0, -5.0], [-8.0, -3.0]]
+        outcome, _ = await run_arxiv_funnel(papers, scores, min_score=-6.0)
+
+        assert outcome.scored == [
+            ScoredItem(item_id="2611.00001", subreddit="cs.LG", score=-2.0, section="Hardware", kept=True),
+            ScoredItem(item_id="2611.00002", subreddit="cs.LG", score=-3.0, section="Cooking", kept=True),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_scored_kept_flags_match_selection(self) -> None:
+        papers = [make_arxiv_paper(1), make_arxiv_paper(2), make_arxiv_paper(3)]
+        scores = [[-1.0], [-9.0], [-3.0]]
+        outcome, _ = await run_arxiv_funnel(papers, scores, min_score=-6.0)
+
+        assert [row.item_id for row in outcome.scored] == ["2611.00001", "2611.00002", "2611.00003"]
+        assert [row.kept for row in outcome.scored] == [True, False, True]
+        assert all(row.section == "Hardware" for row in outcome.scored)
+
+    @pytest.mark.asyncio
+    async def test_scored_subreddit_field_carries_primary_category(self) -> None:
+        papers = [make_arxiv_paper(1, primary_category="cs.DB")]
+        outcome, _ = await run_arxiv_funnel(papers, [[-1.0]], min_score=-6.0)
+        assert outcome.scored[0].subreddit == "cs.DB"
+
+    @pytest.mark.asyncio
+    async def test_documents_are_title_plus_abstract(self) -> None:
+        paper = ArxivPaper(
+            arxiv_id="2611.00001",
+            abs_url="https://arxiv.org/abs/2611.00001",
+            pdf_url="https://arxiv.org/pdf/2611.00001",
+            title="Title here",
+            abstract="Abstract text",
+            authors=["Alice"],
+            categories=["cs.LG"],
+            primary_category="cs.LG",
+            published=datetime(2026, 11, 8, 12, 0, 0, tzinfo=UTC),
+            updated=datetime(2026, 11, 8, 12, 0, 0, tzinfo=UTC),
+        )
+        outcome, stub = await run_arxiv_funnel([paper], [[-1.0]], min_score=-6.0)
+        assert isinstance(stub, StubRerankerClient)
+
+        assert stub.calls[0][1] == ["Title here\n\nAbstract text"]
+        assert stub.calls[0][0] == SECTIONS
+        assert [p.arxiv_id for p in outcome.kept] == ["2611.00001"]
