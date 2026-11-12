@@ -37,7 +37,9 @@ REQUIRED_ENV_VARS = [
 ]
 
 MINIMAL_TOML = """[profile]
-path = "{profile_path}"
+[[profile.sections]]
+name = "About me"
+text = "Interested in: exotic particles and slow loris conservation."
 
 [reddit]
 subreddits = ["python"]
@@ -51,7 +53,9 @@ arxiv_folder = ""
 """
 
 DELIVERY_TOML = """[profile]
-path = "{profile_path}"
+[[profile.sections]]
+name = "About me"
+text = "Interested in: exotic particles and slow loris conservation."
 
 [reddit]
 subreddits = ["python"]
@@ -83,18 +87,11 @@ def make_env(tmp_path: Path, **overrides: str) -> dict[str, str]:
     return env
 
 
-def _write_profile(tmp_path: Path) -> Path:
-    profile_path = tmp_path / "profile.md"
-    profile_path.write_text("Interested in: exotic particles and slow loris conservation.")
-    return profile_path
-
-
 @pytest.fixture
 def cli_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Set a complete valid environment and a minimal config; return config path."""
-    _write_profile(tmp_path)
     toml_path = tmp_path / "matomeru.toml"
-    toml_path.write_text(MINIMAL_TOML.format(profile_path=str(tmp_path / "profile.md")))
+    toml_path.write_text(MINIMAL_TOML)
 
     # Ensure required vars are absent before setting, so dotenv/state don't leak in
     for var in REQUIRED_ENV_VARS:
@@ -110,9 +107,8 @@ def cli_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def _write_delivery_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Environment + config with notes folders configured for both sources."""
-    _write_profile(tmp_path)
     toml_path = tmp_path / "matomeru.toml"
-    toml_path.write_text(DELIVERY_TOML.format(profile_path=str(tmp_path / "profile.md")))
+    toml_path.write_text(DELIVERY_TOML)
 
     for var in REQUIRED_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -397,7 +393,7 @@ class TestMissingEnv:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         toml_path = tmp_path / "matomeru.toml"
-        toml_path.write_text(MINIMAL_TOML.format(profile_path=str(tmp_path / "profile.md")))
+        toml_path.write_text(MINIMAL_TOML)
         state_db = tmp_path / "state" / "state.sqlite3"
 
         for var in REQUIRED_ENV_VARS:
@@ -415,7 +411,7 @@ class TestMissingEnv:
 
     def test_missing_env_arxiv_exit_one(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         toml_path = tmp_path / "matomeru.toml"
-        toml_path.write_text(MINIMAL_TOML.format(profile_path=str(tmp_path / "profile.md")))
+        toml_path.write_text(MINIMAL_TOML)
 
         for var in REQUIRED_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
@@ -424,11 +420,13 @@ class TestMissingEnv:
 
 
 class TestMissingProfile:
-    """A missing profile file is a ConfigError: exit 1, no run row created."""
+    """A missing [profile] section is a ConfigError: exit 1, no run row created."""
 
     def test_missing_profile_exit_one_no_db(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         toml_path = tmp_path / "matomeru.toml"
-        toml_path.write_text(MINIMAL_TOML.format(profile_path=str(tmp_path / "does-not-exist.md")))
+        toml_path.write_text(
+            '[reddit]\nsubreddits = ["python"]\n\n[arxiv]\ncategories = []\n\n[notes]\nreddit_folder = ""\narxiv_folder = ""\n'
+        )
 
         for var in REQUIRED_ENV_VARS:
             monkeypatch.delenv(var, raising=False)

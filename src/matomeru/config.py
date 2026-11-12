@@ -18,11 +18,19 @@ class ConfigError(Exception):
 
 
 @dataclass
+class ProfileSection:
+    """One interest-profile section from the TOML [[profile.sections]] tables."""
+
+    name: str
+    text: str
+
+
+@dataclass
 class AppConfig:
     """Application-level configuration from TOML."""
 
     config_path: str
-    profile_path: str
+    profile_sections: list[ProfileSection]
     reddit_subreddits: list[str]
     reddit_posts_per_subreddit: int
     reddit_comments_per_post: int
@@ -32,6 +40,9 @@ class AppConfig:
     arxiv_max_results: int
     notes_reddit_folder: str
     notes_arxiv_folder: str
+    reranker_reddit_top_x: int = 3
+    reranker_arxiv_min_score: float = -6.0
+    reranker_min_score: float | None = None
 
 
 @dataclass
@@ -52,7 +63,9 @@ class RuntimeConfig:
     smtp_from: str
     smtp_to: str
     tz_iana: str
-    state_db_path: str
+    reranker_url: str | None = None
+    reranker_token: str | None = None
+    state_db_path: str = ""
 
 
 def load_app_config(path: str | None = None) -> AppConfig:
@@ -86,14 +99,13 @@ def load_app_config(path: str | None = None) -> AppConfig:
     except OSError as e:
         raise ConfigError(f"Failed to read configuration file {config_file}: {e}") from e
 
-    # Extract required profile section
+    # Extract required profile section (array-of-tables, not a file path)
     if "profile" not in data:
         raise ConfigError("Configuration file missing required [profile] section")
     profile = data.get("profile", {})
-    if "path" not in profile:
-        raise ConfigError("Configuration file [profile] section missing 'path' field")
-
-    profile_path = profile["path"]
+    if "sections" not in profile:
+        raise ConfigError("Configuration file [profile] section missing required 'sections'")
+    profile_sections = _parse_profile_sections(profile["sections"])
 
     # Extract Reddit section with defaults
     reddit = data.get("reddit", {})
@@ -114,6 +126,17 @@ def load_app_config(path: str | None = None) -> AppConfig:
         )
     arxiv_category_terms = _parse_category_terms(arxiv.get("category_terms", {}))
 
+    # Extract optional reranker section
+    reranker = data.get("reranker", {})
+    reranker_reddit_top_x = reranker.get("reddit_top_x", 3)
+    reranker_arxiv_min_score = reranker.get("arxiv_min_score", -6.0)
+    reranker_min_score = reranker.get("min_score")
+    _validate_reranker(
+        reranker_reddit_top_x,
+        reranker_arxiv_min_score,
+        reranker_min_score,
+    )
+
     # Extract notes section
     notes = data.get("notes", {})
     notes_reddit_folder = notes.get("reddit_folder", "")
@@ -121,7 +144,7 @@ def load_app_config(path: str | None = None) -> AppConfig:
 
     return AppConfig(
         config_path=str(config_file),
-        profile_path=profile_path,
+        profile_sections=profile_sections,
         reddit_subreddits=subreddits,
         reddit_posts_per_subreddit=posts_per_subreddit,
         reddit_comments_per_post=comments_per_post,
@@ -129,9 +152,66 @@ def load_app_config(path: str | None = None) -> AppConfig:
         arxiv_search_terms=arxiv_search_terms,
         arxiv_category_terms=arxiv_category_terms,
         arxiv_max_results=arxiv_max_results,
+        reranker_reddit_top_x=reranker_reddit_top_x,
+        reranker_arxiv_min_score=reranker_arxiv_min_score,
+        reranker_min_score=reranker_min_score,
         notes_reddit_folder=notes_reddit_folder,
         notes_arxiv_folder=notes_arxiv_folder,
     )
+
+
+def _parse_profile_sections(raw: object) -> list[ProfileSection]:
+    """Validate and copy the [[profile.sections]] array-of-tables.
+
+    Every section needs a non-empty name and text; names must be unique and
+    at least one section must exist. Trailing whitespace is trimmed from
+    text so a multi-line TOML string can be written with the closing
+    delimiter on its own line.
+    """
+    if not isinstance(raw, list):
+        raise ConfigError(f"Configuration file [profile] 'sections' must be an array of tables, got: {raw!r}")
+    if not raw:
+        raise ConfigError("Configuration file [profile] 'sections' must contain at least one section")
+    sections: list[ProfileSection] = []
+    for i, raw_section in enumerate(raw):
+        context = f"Configuration file [profile] section {i}"
+        if not isinstance(raw_section, dict):
+            raise ConfigError(f"{context} must be a table, got: {raw_section!r}")
+        name = raw_section.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigError(f"{context} needs a non-empty 'name'")
+        text = raw_section.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ConfigError(f"{context} needs a non-empty 'text'")
+        sections.append(ProfileSection(name=name, text=text.rstrip()))
+    names = [section.name for section in sections]
+    if len(names) != len(set(names)):
+        raise ConfigError("Configuration file [profile] 'sections' names must be unique")
+    return sections
+
+
+def _validate_reranker(top_x: object, arxiv_min_score: object, min_score: object) -> None:
+    """Validate the [reranker] table fields."""
+    if not isinstance(top_x, int) or isinstance(top_x, bool) or top_x < 1:
+        raise ConfigError(f"Configuration file [reranker] 'reddit_top_x' must be a positive integer, got: {top_x!r}")
+    if not isinstance(arxiv_min_score, (int, float)) or isinstance(arxiv_min_score, bool):
+        raise ConfigError(f"Configuration file [reranker] 'arxiv_min_score' must be a number, got: {arxiv_min_score!r}")
+    if min_score is not None and (not isinstance(min_score, (int, float)) or isinstance(min_score, bool)):
+        raise ConfigError(f"Configuration file [reranker] 'min_score' must be null or a number, got: {min_score!r}")
+
+
+def render_profile_markdown(sections: list[ProfileSection]) -> str:
+    """Render the profile sections as the Markdown text the LLM sees.
+
+    Produces ``# Interest profile\n\n## {name}\n\n{text}\n`` blocks joined by
+    a blank line — the same content the old profile.md file delivered, so
+    summarization quality is unchanged.
+    """
+    if not sections:
+        return "# Interest profile\n\n"
+    blocks: list[str] = [f"# Interest profile\n\n## {sections[0].name}\n\n{sections[0].text}\n"]
+    blocks.extend(f"## {section.name}\n\n{section.text}\n" for section in sections[1:])
+    return "\n".join(blocks)
 
 
 def _parse_category_terms(raw: object) -> dict[str, list[str]]:
@@ -183,6 +263,8 @@ def load_runtime_config() -> RuntimeConfig:
     Optional with defaults:
         SAGASHI_MCP_TOKEN (None) - bearer token for the Sagashi MCP server
         NOTES_MCP_TOKEN (None) - bearer token for the Notes MCP server
+        RERANKER_URL (None) - reranker endpoint URL; unset skips the funnel
+        RERANKER_TOKEN (None) - bearer token for the reranker endpoint
         LLM_API_KEY (None)
         SMTP_USER (empty string)
         SMTP_PASSWORD (empty string)
@@ -227,25 +309,6 @@ def load_runtime_config() -> RuntimeConfig:
         smtp_to=os.environ["SMTP_TO"],
         tz_iana=os.environ["TZ"],
         state_db_path=_optional_env("MATOMERU_STATE_DB") or state_db_default,
+        reranker_url=_optional_env("RERANKER_URL"),
+        reranker_token=_optional_env("RERANKER_TOKEN"),
     )
-
-
-def load_profile_text(app: AppConfig) -> str:
-    """Load the profile Markdown text.
-
-    Args:
-        app: Application configuration with profile_path.
-
-    Returns:
-        Profile file contents as string.
-
-    Raises:
-        ConfigError: If profile file is missing or unreadable.
-    """
-    profile_path = Path(app.profile_path)
-    if not profile_path.exists():
-        raise ConfigError(f"Profile file not found: {profile_path}")
-    try:
-        return profile_path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise ConfigError(f"Failed to read profile file {profile_path}: {e}") from e

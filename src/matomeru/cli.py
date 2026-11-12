@@ -38,8 +38,8 @@ from matomeru.config import (
     ConfigError,
     RuntimeConfig,
     load_app_config,
-    load_profile_text,
     load_runtime_config,
+    render_profile_markdown,
 )
 from matomeru.digest import (
     render_arxiv_digest,
@@ -338,7 +338,7 @@ def _run_source(source: str, argv: list[str] | None) -> int:
         configure_logging()
         app = load_app_config(args.config)
         runtime = load_runtime_config()
-        profile_text = load_profile_text(app)
+        profile_text = render_profile_markdown(app.profile_sections)
 
         window = compute_run_window(runtime.tz_iana)
 

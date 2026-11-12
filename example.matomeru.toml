@@ -3,8 +3,30 @@
 # and fill in your actual values.
 
 [profile]
-# Path to your Markdown interest profile (required)
-path = "/path/to/profile.md"
+# Interest profile, as an array-of-tables. Each section needs a non-empty
+# 'name' and 'text'; names must be unique. The profile is embedded in the
+# LLM digest prompts and drives the reranker's per-section scoring.
+
+[[profile.sections]]
+name = "About me"
+text = """
+Software engineer interested in programming languages, tooling, and
+open-source development. Lives in Germany, learning Japanese.
+"""
+
+[[profile.sections]]
+name = "Local AI"
+text = """
+Local LLM inference, quantization, and small models that run on consumer
+hardware.
+"""
+
+[[profile.sections]]
+name = "arXiv relevance guidance"
+text = """
+Keep papers on: LLM agent research, tabular machine learning, and applied
+statistics. Prefer papers with released code and demonstrated applicability.
+"""
 
 [reddit]
 # Subreddits to monitor (required, at least one)

@@ -85,6 +85,8 @@ def runtime_config() -> RuntimeConfig:
         smtp_to="d@e.f",
         tz_iana="Asia/Tokyo",
         state_db_path="state.db",
+        reranker_url=None,
+        reranker_token=None,
     )
 
 

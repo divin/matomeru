@@ -8,35 +8,17 @@ from pathlib import Path
 import pytest
 
 from matomeru.config import (
-    AppConfig,
     ConfigError,
+    ProfileSection,
     RuntimeConfig,
     _parse_category_terms,
     load_app_config,
-    load_profile_text,
     load_runtime_config,
+    render_profile_markdown,
 )
 from matomeru.logging_setup import configure_logging
 
-
 # TOML content for tests
-def make_minimal_toml(profile_path: str, subreddits: list[str]) -> str:
-    """Generate minimal valid TOML."""
-    subreddits_str = ", ".join(f'"{s}"' for s in subreddits)
-    return f"""[profile]
-path = "{profile_path}"
-
-[reddit]
-subreddits = [{subreddits_str}]
-
-[arxiv]
-categories = []
-search_terms = []
-
-[notes]
-reddit_folder = ""
-arxiv_folder = ""
-"""
 
 
 class TestLoadAppConfig:
@@ -47,7 +29,9 @@ class TestLoadAppConfig:
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python", "rust"]
@@ -66,7 +50,8 @@ arxiv_folder = "arXiv"
         config = load_app_config(str(toml_path))
 
         assert config.config_path == str(toml_path)
-        assert config.profile_path == "/home/user/profile.md"
+        assert config.profile_sections[0].name == "About me"
+        assert config.profile_sections[0].text == "Python, Rust, AI"
         assert config.reddit_subreddits == ["python", "rust"]
         assert config.reddit_posts_per_subreddit == 5
         assert config.reddit_comments_per_post == 30
@@ -81,7 +66,9 @@ arxiv_folder = "arXiv"
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -108,7 +95,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -131,7 +120,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -155,7 +146,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -188,7 +181,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -210,7 +205,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -234,7 +231,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -260,7 +259,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -309,7 +310,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [arxiv]
 categories = []
@@ -324,8 +327,8 @@ arxiv_folder = ""
             load_app_config(str(toml_path))
         assert "missing required 'subreddits' field" in str(exc_info.value)
 
-    def test_missing_required_profile_path(self, tmp_path: Path) -> None:
-        """Missing profile path raises ConfigError."""
+    def test_missing_required_profile_section(self, tmp_path: Path) -> None:
+        """Missing [profile] section raises ConfigError."""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[reddit]
@@ -344,12 +347,229 @@ arxiv_folder = ""
             load_app_config(str(toml_path))
         assert "missing required [profile] section" in str(exc_info.value)
 
+    def test_missing_profile_sections(self, tmp_path: Path) -> None:
+        """A [profile] section without any section raises ConfigError."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "missing required 'sections'" in str(exc_info.value)
+
+    def test_profile_sections_defaults(self, tmp_path: Path) -> None:
+        """profile_sections is parsed from the TOML array-of-tables."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
+
+[[profile.sections]]
+name = "Hobbies"
+text = "Gaming"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        config = load_app_config(str(toml_path))
+        assert [s.name for s in config.profile_sections] == ["About me", "Hobbies"]
+        assert [s.text for s in config.profile_sections] == ["Python, Rust, AI", "Gaming"]
+
+    def test_profile_sections_empty_name(self, tmp_path: Path) -> None:
+        """An empty section name raises ConfigError."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+[[profile.sections]]
+name = ""
+text = "Python, Rust, AI"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "needs a non-empty 'name'" in str(exc_info.value)
+
+    def test_profile_sections_empty_text(self, tmp_path: Path) -> None:
+        """An empty section text raises ConfigError."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+[[profile.sections]]
+name = "About me"
+text = ""
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "needs a non-empty 'text'" in str(exc_info.value)
+
+    def test_profile_sections_duplicate_name(self, tmp_path: Path) -> None:
+        """Duplicate section names raise ConfigError."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
+
+[[profile.sections]]
+name = "About me"
+text = "Gaming"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "names must be unique" in str(exc_info.value)
+
+    def test_reranker_defaults(self, tmp_path: Path) -> None:
+        """[reranker] defaults apply when the table is absent."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        config = load_app_config(str(toml_path))
+        assert config.reranker_reddit_top_x == 3
+        assert config.reranker_arxiv_min_score == -6.0
+        assert config.reranker_min_score is None
+
+    def test_reranker_overrides(self, tmp_path: Path) -> None:
+        """[reranker] overrides are applied."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[reranker]
+reddit_top_x = 5
+arxiv_min_score = -5.5
+min_score = -8.0
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        config = load_app_config(str(toml_path))
+        assert config.reranker_reddit_top_x == 5
+        assert config.reranker_arxiv_min_score == -5.5
+        assert config.reranker_min_score == -8.0
+
+    def test_reranker_invalid_reddit_top_x(self, tmp_path: Path) -> None:
+        """A non-positive reddit_top_x raises ConfigError."""
+        toml_path = tmp_path / "matomeru.toml"
+        toml_path.write_text(
+            """[profile]
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
+
+[reddit]
+subreddits = ["python"]
+
+[arxiv]
+categories = []
+search_terms = []
+
+[reranker]
+reddit_top_x = 0
+
+[notes]
+reddit_folder = ""
+arxiv_folder = ""
+"""
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            load_app_config(str(toml_path))
+        assert "reddit_top_x" in str(exc_info.value)
+
     def test_env_var_path_resolution(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """MATOMERU_CONFIG env var is used when no explicit path."""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -373,7 +593,9 @@ arxiv_folder = ""
         toml_path = tmp_path / "matomeru.toml"
         toml_path.write_text(
             """[profile]
-path = "/home/user/profile.md"
+[[profile.sections]]
+name = "About me"
+text = "Python, Rust, AI"
 
 [reddit]
 subreddits = ["python"]
@@ -410,6 +632,8 @@ class TestLoadRuntimeConfig:
             "LLM_API_KEY": "sk-1234",
             "SMTP_USER": "matomeru",
             "SMTP_PASSWORD": "secret",
+            "RERANKER_URL": "http://reranker:9093/v1/rerank",
+            "RERANKER_TOKEN": "rerank-secret",
         }
         for k, v in env.items():
             monkeypatch.setenv(k, v)
@@ -417,6 +641,8 @@ class TestLoadRuntimeConfig:
         config = load_runtime_config()
 
         assert isinstance(config, RuntimeConfig)
+        assert config.reranker_url == "http://reranker:9093/v1/rerank"
+        assert config.reranker_token == "rerank-secret"
         assert config.sagashi_mcp_url == "http://sagashi:8000"
         assert config.notes_mcp_url == "http://notes:9008/mcp"
         assert config.llm_base_url == "http://localhost:11434/v1"
@@ -453,6 +679,8 @@ class TestLoadRuntimeConfig:
         assert config.state_db_path == expected
         assert config.sagashi_mcp_token is None
         assert config.notes_mcp_token is None
+        assert config.reranker_url is None
+        assert config.reranker_token is None
 
     def test_state_db_empty_env_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An explicitly empty MATOMERU_STATE_DB falls back to the default path."""
@@ -520,51 +748,29 @@ class TestLoadRuntimeConfig:
         assert "TZ" in str(exc_info.value)
 
 
-class TestLoadProfileText:
-    """Tests for load_profile_text."""
+class TestRenderProfileMarkdown:
+    """Tests for render_profile_markdown."""
 
-    def test_happy_path(self, tmp_path: Path) -> None:
-        """Profile file is read successfully."""
-        profile_path = tmp_path / "profile.md"
-        profile_path.write_text("# Interests\n\nPython, Rust, AI")
-        app = AppConfig(
-            config_path=str(tmp_path / "matomeru.toml"),
-            profile_path=str(profile_path),
-            reddit_subreddits=["python"],
-            reddit_posts_per_subreddit=3,
-            reddit_comments_per_post=20,
-            arxiv_categories=[],
-            arxiv_search_terms=[],
-            arxiv_max_results=100,
-            arxiv_category_terms={},
-            notes_reddit_folder="",
-            notes_arxiv_folder="",
+    def test_render_exact_output_single_section(self) -> None:
+        """The exact output matches the profile.md format for one section."""
+        sections = [ProfileSection(name="About me", text="Python, Rust, AI")]
+
+        rendered = render_profile_markdown(sections)
+
+        assert rendered == "# Interest profile\n\n## About me\n\nPython, Rust, AI\n"
+
+    def test_render_exact_output_multiple_sections(self) -> None:
+        """The exact output matches the profile.md format for multiple sections."""
+        sections = [
+            ProfileSection(name="About me", text="Python, Rust, AI"),
+            ProfileSection(name="Hobbies", text="Gaming\n- factorio"),
+        ]
+
+        rendered = render_profile_markdown(sections)
+
+        assert rendered == (
+            "# Interest profile\n\n## About me\n\nPython, Rust, AI\n\n## Hobbies\n\nGaming\n- factorio\n"
         )
-
-        profile = load_profile_text(app)
-
-        assert "# Interests" in profile
-        assert "Python, Rust, AI" in profile
-
-    def test_missing_profile_file(self, tmp_path: Path) -> None:
-        """Missing profile file raises ConfigError."""
-        app = AppConfig(
-            config_path=str(tmp_path / "matomeru.toml"),
-            profile_path=str(tmp_path / "nonexistent.md"),
-            reddit_subreddits=["python"],
-            reddit_posts_per_subreddit=3,
-            reddit_comments_per_post=20,
-            arxiv_categories=[],
-            arxiv_search_terms=[],
-            arxiv_max_results=100,
-            arxiv_category_terms={},
-            notes_reddit_folder="",
-            notes_arxiv_folder="",
-        )
-
-        with pytest.raises(ConfigError) as exc_info:
-            load_profile_text(app)
-        assert "Profile file not found" in str(exc_info.value)
 
 
 class TestConfigureLogging:
@@ -633,21 +839,29 @@ class TestOptionalEnvVars:
         monkeypatch.setenv("SAGASHI_MCP_TOKEN", "")
         monkeypatch.setenv("NOTES_MCP_TOKEN", "")
         monkeypatch.setenv("LLM_API_KEY", "")
+        monkeypatch.setenv("RERANKER_URL", "")
+        monkeypatch.setenv("RERANKER_TOKEN", "")
 
         runtime = load_runtime_config()
 
         assert runtime.sagashi_mcp_token is None
         assert runtime.notes_mcp_token is None
         assert runtime.llm_api_key is None
+        assert runtime.reranker_url is None
+        assert runtime.reranker_token is None
 
     def test_unset_optionals_remain_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._full_env(monkeypatch)
         monkeypatch.delenv("SAGASHI_MCP_TOKEN", raising=False)
         monkeypatch.delenv("NOTES_MCP_TOKEN", raising=False)
         monkeypatch.delenv("LLM_API_KEY", raising=False)
+        monkeypatch.delenv("RERANKER_URL", raising=False)
+        monkeypatch.delenv("RERANKER_TOKEN", raising=False)
 
         runtime = load_runtime_config()
 
         assert runtime.sagashi_mcp_token is None
         assert runtime.notes_mcp_token is None
         assert runtime.llm_api_key is None
+        assert runtime.reranker_url is None
+        assert runtime.reranker_token is None
