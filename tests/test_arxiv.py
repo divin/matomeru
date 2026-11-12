@@ -320,7 +320,7 @@ class TestCollectArxiv:
         assert [r.url.path for r in captured] == ["/rss/cs.AI", "/rss/cs.LG"]
         for request in captured:
             assert request.url.host == "rss.arxiv.org"
-            assert request.headers["User-Agent"].startswith("matomeru/0.1.0")
+            assert request.headers["User-Agent"].startswith("matomeru/1.1.0")
             assert "(self-hosted digest)" in request.headers["User-Agent"]
 
     @pytest.mark.asyncio

@@ -64,6 +64,23 @@ search_terms = ["large language model", "transformer"]
 # Maximum results requested from the arXiv API per run (default: 100)
 max_results = 100
 
+[reranker]
+# Applies only when RERANKER_URL is set in .env; otherwise the funnel is
+# disabled and these values are ignored. When the reranker is configured,
+# Reddit keeps the top reddit_top_x threads per subreddit for summarization
+# and arXiv includes every paper scoring at least arxiv_min_score (raw
+# logit space) instead of running LLM screening.
+
+# Threads kept per subreddit (default: 3)
+reddit_top_x = 3
+
+# Minimum reranker score for an arXiv paper to be included (default: -6.0)
+arxiv_min_score = -6.0
+
+# Optional global minimum-score floor applied after top-X selection
+# (default: off). Leave commented out until score distributions are known.
+# min_score = -8.0
+
 [notes]
 # Notes MCP folder paths (create these in your Notes vault, or let
 # Matomeru create them; empty disables notes delivery for that source)

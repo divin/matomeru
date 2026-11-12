@@ -15,10 +15,10 @@ flowchart LR
     cron[Cron] --> R[matomeru-reddit]
     cron --> A[matomeru-arxiv]
     R -->|top posts + threads| S[Sagashi MCP]
-    A -->|new papers| X[arXiv Atom API]
+    A -->|new papers| X[arXiv RSS feeds]
     S --> L[Local LLM via pydantic-ai]
     X --> L
-    P[Interest profile<br/>profile.md] -. embedded in every prompt .-> L
+    P[Interest profile<br/>matomeru.toml sections] -. embedded in every prompt .-> L
     L --> T[Deterministic digest templates]
     T --> M[SMTP email]
     T --> N[Notes MCP dated note]
@@ -27,12 +27,23 @@ flowchart LR
 
 Two sources, two commands, each with its own digest, email, and notes folder:
 
-- `uv run matomeru-reddit` collects the configured top posts from selected subreddits, fetches their threads and top comments through the Sagashi MCP server, and summarizes each post and its discussion, explaining its relevance to the profile.
-- `uv run matomeru-arxiv` queries the official arXiv Atom API for new papers in configured categories and abstract search terms, screens each abstract against the profile, and summarizes the relevant papers.
+- `uv run matomeru-reddit` collects the configured top posts from selected subreddits and fetches their threads and top comments through the Sagashi MCP server. When a reranker endpoint is configured (`RERANKER_URL`), every collected thread is scored against each profile section in one batched request and only the top `reddit_top_x` threads per subreddit are summarized; each kept post is summarized with its discussion, explaining its relevance to the profile. Without the reranker, all collected threads are summarized.
+- `uv run matomeru-arxiv` queries the per-category arXiv RSS announcement feeds for new papers in configured categories and abstract search terms. When a reranker is configured, LLM screening is replaced by deterministic threshold selection — every paper scoring at least `arxiv_min_score` is summarized, and no screening LLM calls are made. Without the reranker, each abstract is screened against the profile by the LLM and only the relevant papers are summarized.
 
 **The determinism principle.** Configuration owns everything structural: paths, folders, recipients, window boundaries, and the digest layout — templates live in code, not in the model. The LLM only fills text slots via structured output: `summary` and `why_relevant` for each Reddit thread, `summary` and `why_relevant` for each included arXiv paper, and the `include`/`reason` screening decision for arXiv papers. The agent registers no tools and never receives authority to act; prompt content is embedded purely as data with fixed truncation caps.
 
+With the reranker configured, this principle extends from structure to **selection**: which threads and papers enter the digest is decided by code from reranker scores (top-X per subreddit for Reddit, score threshold for arXiv), not by the model. The LLM keeps its generation-only role of slot-filling the summaries of the selected items.
+
 **Conservative exclusion.** arXiv screening prompts instruct the model to decide `include=false` when uncertain, and a screening call that *fails* (model or transport error) is also treated as excluded — a paper is left out rather than guessed into the digest. A Reddit thread whose summarization fails is likewise excluded and recorded in the digest's Errors section.
+
+## ⚡ Performance
+
+The first real run took **~6 h for Reddit**: 110 threads summarized sequentially at ~3.3 min per LLM call on the deployment's local model, and arXiv screening adds up to ~100 more LLM calls per run. A cross-encoder **reranker sidecar** ([llama-server](https://github.com/ggml-org/llama.cpp) with `--reranking --pooling rank`, e.g. running `bge-reranker-v2-m3` via `llama-server -m bge-reranker-v2-m3-Q8_0.gguf --reranking --pooling rank --port <port> --ubatch-size 4096`) scores all collected candidates in one cheap request, so only the selected subset ever reaches the LLM:
+
+- **Reddit:** ~110 thread summarizations shrink to the top `reddit_top_x` per subreddit (default 3).
+- **arXiv:** the LLM screening stage drops to zero calls; selection is a deterministic score threshold.
+
+Measured before/after numbers will be added here after the first live run with the sidecar. The model choice and evaluation are documented in [reranker-models.md](docs/research/reranker-models.md); the sidecar is configured via `RERANKER_URL` (see the [configuration reference](#%EF%B8%8F-configuration-reference)).
 
 ## 🚀 Quick start
 
@@ -46,10 +57,9 @@ Prerequisites: [uv](https://docs.astral.sh/uv/) (provides Python 3.12), a runnin
    uv sync
    ```
 
-2. Write `profile.md` — your Markdown interest profile (general interests plus per-source detail); it is embedded verbatim into every prompt.
-3. Copy `example.matomeru.toml` to `matomeru.toml` and fill in your values. The `[profile] path` and `[reddit] subreddits` fields are required; see the [configuration reference](#%EF%B8%8F-configuration-reference). The file is looked up at the explicit `--config` path, the `MATOMERU_CONFIG` environment variable, or `matomeru.toml` in the current working directory, in that order.
-4. Copy `example.env` to `.env` and fill in the TODO values. All variables (required and optional) are listed there; the required ones are enforced at startup.
-5. Verify with a dry run — prints the computed window plan and exits 0 without touching state or the network:
+2. Copy `example.matomeru.toml` to `matomeru.toml` and fill in your values, including the `[[profile.sections]]` tables — your interest profile as `name`/`text` sections (at least one; embedded into every prompt and used as the reranker's per-section scoring queries). The `[[profile.sections]]` and `[reddit] subreddits` fields are required; see the [configuration reference](#%EF%B8%8F-configuration-reference). The file is looked up at the explicit `--config` path, the `MATOMERU_CONFIG` environment variable, or `matomeru.toml` in the current working directory, in that order.
+3. Copy `example.env` to `.env` and fill in the TODO values. All variables (required and optional) are listed there; the required ones are enforced at startup.
+4. Verify with a dry run — prints the computed window plan and exits 0 without touching state or the network:
 
    ```sh
    uv run matomeru-reddit --dry-run
@@ -57,7 +67,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/) (provides Python 3.12), a runnin
 
    Do the same for `matomeru-arxiv` if you use it.
 
-6. First real run:
+5. First real run:
 
    ```sh
    uv run matomeru-reddit
@@ -90,6 +100,8 @@ All variables are loaded from `.env` in the working directory (via `python-doten
 | `SMTP_FROM` | required | — | Sender address (`From` header and envelope sender). |
 | `SMTP_TO` | required | — | Comma-separated recipient addresses. |
 | `TZ` | required | — | IANA timezone name (e.g. `Europe/Berlin`) used for the report date and local display. |
+| `RERANKER_URL` | optional | unset | Full URL of the reranker sidecar's `/v1/rerank` endpoint. **Off-switch:** when unset, the reranker funnel is disabled and behavior is identical to v1 (all Reddit threads summarized; arXiv uses LLM screening). |
+| `RERANKER_TOKEN` | optional | none | Bearer token sent as `Authorization: Bearer …` to the reranker. |
 | `MATOMERU_STATE_DB` | optional | `~/.local/state/matomeru/state.sqlite3` | Path to the SQLite state database. |
 | `MATOMERU_LOG_LEVEL` | optional | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`); invalid values fall back to `INFO` with a warning. |
 
@@ -97,7 +109,8 @@ All variables are loaded from `.env` in the working directory (via `python-doten
 
 | Section | Key | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `[profile]` | `path` | required | — | Path to the Markdown interest profile. |
+| `[[profile.sections]]` | `name` | required | — | Name of one interest-profile section (non-empty, unique across sections). |
+| `[[profile.sections]]` | `text` | required | — | Section body; at least one section is required. Sections are rendered into the LLM prompts and each serves as a reranker scoring query. |
 | `[reddit]` | `subreddits` | required | — | List of subreddits to monitor (at least one). |
 | `[reddit]` | `posts_per_subreddit` | optional | `3` | Number of top posts collected per subreddit. |
 | `[reddit]` | `comments_per_post` | optional | `20` | Number of top comments fetched per post. |
@@ -107,11 +120,19 @@ All variables are loaded from `.env` in the working directory (via `python-doten
 | `[arxiv]` | `max_results` | optional | `100` | Maximum results requested from the arXiv API per run (positive integer). |
 | `[notes]` | `reddit_folder` | optional | empty | Vault folder for Reddit notes; empty disables notes delivery for Reddit. |
 | `[notes]` | `arxiv_folder` | optional | empty | Vault folder for arXiv notes; empty disables notes delivery for arXiv. |
+| `[reranker]` | `reddit_top_x` | optional | `3` | Threads kept per subreddit for summarization when the reranker is configured (capped by what was collected). |
+| `[reranker]` | `arxiv_min_score` | optional | `-6.0` | Minimum reranker score (raw logit space) for an arXiv paper to be included when the reranker is configured. |
+| `[reranker]` | `min_score` | optional | off | Optional global minimum-score floor applied after top-X selection; leave unset to disable. |
 
 Notes on the arXiv section:
 
 - Both `categories` and `search_terms` empty is a **`ConfigError`** — retrieval needs at least one selector. The two combine as `(categories) AND (search terms)` when both are present.
 - `max_results` must be a positive integer or the run exits 1 with a `ConfigError`.
+
+Notes on the reranker section:
+
+- The `[reranker]` settings apply only when `RERANKER_URL` is set; without it, the funnel is disabled and these values are ignored.
+- A reranker request that fails (unreachable, error, malformed/incomplete response) fails the run (exit 1) — there is no silent fallback to full summarization.
 
 ## ⏰ Cron setup
 
@@ -173,7 +194,7 @@ just check # Type, format, and lint checks
 just test  # Test suite
 ```
 
-The test suite currently contains **246 tests** and passes.
+The test suite currently contains **321 tests** and passes.
 
 ## 📚 Documentation
 
@@ -181,3 +202,4 @@ The test suite currently contains **246 tests** and passes.
 - [Configuration sample](example.matomeru.toml)
 - [Environment variable template](example.env)
 - [Reddit rate-limit research](docs/research/reddit-rate-limits.md)
+- [Reranker model research](docs/research/reranker-models.md)
