@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from matomeru.funnel import ScoredItem
 from matomeru.window import RunWindow
 
 
@@ -25,7 +26,7 @@ def _connect(state_db_path: str) -> Generator[sqlite3.Connection]:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Ensure the runs table exists in the database."""
+    """Ensure the runs and rerank_scores tables exist in the database."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS runs (
@@ -41,7 +42,45 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rerank_scores (
+            source TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            score REAL NOT NULL,
+            kept INTEGER NOT NULL,
+            section TEXT NOT NULL,
+            PRIMARY KEY (source, report_date, item_id)
+        )
+        """
+    )
     conn.commit()
+
+
+def record_rerank_scores(state_db_path: str, source: str, report_date: str, rows: list[ScoredItem]) -> None:
+    """Persist funnel score rows for one source and report date.
+
+    Rows are kept indefinitely (small, and historical score distributions
+    drive threshold calibration). Re-scoring the same item replaces its row
+    (INSERT OR REPLACE on the ``(source, report_date, item_id)`` key).
+
+    Args:
+        state_db_path: Path to the SQLite state database.
+        source: Source name (e.g. 'reddit').
+        report_date: Report date string (YYYY-MM-DD).
+        rows: One ScoredItem per scored item, from the funnel outcome.
+    """
+    with _connect(state_db_path) as conn:
+        for row in rows:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO rerank_scores (source, report_date, item_id, score, kept, section)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (source, report_date, row.item_id, row.score, 1 if row.kept else 0, row.section),
+            )
+        conn.commit()
 
 
 def begin_run(state_db_path: str, source: str, window: RunWindow, *, force: bool = False) -> tuple[str, str]:

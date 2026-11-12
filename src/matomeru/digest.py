@@ -45,14 +45,21 @@ def _render(
     all_failed_body: str,
     errors: list[str],
     trailing_lines: list[str],
+    funnel_line: str | None = None,
 ) -> str:
     """Assemble a digest body from already-rendered pieces (fixed template).
 
     With no items, a genuinely empty window renders ``no_results_body``;
     items that were collected but all lost to errors render
     ``all_failed_body`` instead, so the two situations read differently.
+
+    ``funnel_line`` (reranker funnel count header) is rendered after the
+    window line when supplied; ``None`` keeps the v1 layout byte-for-byte.
     """
-    lines: list[str] = [heading, _window_line(window), ""]
+    lines: list[str] = [heading, _window_line(window)]
+    if funnel_line is not None:
+        lines.append(funnel_line)
+    lines.append("")
 
     if item_blocks:
         lines.extend(item_blocks)
@@ -82,6 +89,7 @@ def render_reddit_digest(
     fetch_errors: list[ThreadFetchError],
     *,
     partial: bool,
+    funnel_line: str | None = None,
 ) -> str:
     """Render the Reddit digest markdown.
 
@@ -92,6 +100,9 @@ def render_reddit_digest(
         fetch_errors: Per-thread fetch errors, rendered in an Errors section.
         partial: Orchestration-supplied flag; when True a visible partial-run
             line is appended.
+        funnel_line: Optional reranker funnel count header (e.g.
+            "Ranked 110 threads, kept 22"), rendered after the window line;
+            ``None`` (funnel inactive) keeps the v1 output unchanged.
 
     Returns:
         The digest markdown string.
@@ -127,6 +138,7 @@ def render_reddit_digest(
         all_failed_body=REDDIT_ALL_FAILED,
         errors=[f"{error.item}: {error.error}" for error in fetch_errors],
         trailing_lines=trailing,
+        funnel_line=funnel_line,
     )
 
 
@@ -236,12 +248,15 @@ def _render_html(
     all_failed_body: str,
     errors: list[str],
     trailing_blocks: list[str],
+    funnel_line: str | None = None,
 ) -> str:
     """Assemble an HTML digest body from already-rendered pieces (fixed template).
 
     Mirrors :func:`_render` exactly: no-results body when there are no items
     and no errors, all-failed body when items are empty but errors exist,
     an Errors section whenever errors are present, and trailing blocks last.
+    ``funnel_line`` mirrors the text renderer's placement after the window
+    line; ``None`` keeps the v1 output unchanged.
     """
     lines: list[str] = [
         "<!DOCTYPE html>",
@@ -254,6 +269,8 @@ def _render_html(
         f"<h1>{_esc(heading)}</h1>",
         _html_window_line(window),
     ]
+    if funnel_line is not None:
+        lines.append(f"<p>{_esc(funnel_line)}</p>")
 
     if item_blocks:
         lines.extend(item_blocks)
@@ -284,6 +301,7 @@ def render_reddit_digest_html(
     fetch_errors: list[ThreadFetchError],
     *,
     partial: bool,
+    funnel_line: str | None = None,
 ) -> str:
     """Render the Reddit digest as a self-contained HTML document.
 
@@ -297,6 +315,9 @@ def render_reddit_digest_html(
         fetch_errors: Per-thread fetch errors, rendered in an Errors section.
         partial: Orchestration-supplied flag; when True a visible partial-run
             paragraph is appended.
+        funnel_line: Optional reranker funnel count header, rendered after
+            the window paragraph; ``None`` (funnel inactive) keeps the v1
+            output unchanged.
 
     Returns:
         The digest HTML string (no external resources, no images, no JS).
@@ -331,6 +352,7 @@ def render_reddit_digest_html(
         all_failed_body=REDDIT_ALL_FAILED,
         errors=[f"{error.item}: {error.error}" for error in fetch_errors],
         trailing_blocks=trailing,
+        funnel_line=funnel_line,
     )
 
 

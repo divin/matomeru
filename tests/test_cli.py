@@ -16,10 +16,12 @@ import httpx
 import pytest
 
 import matomeru.cli as cli
+from matomeru.digest import REDDIT_NO_RESULTS, render_reddit_digest, render_reddit_digest_html
 from matomeru.llm import ArxivPaperSummary, RedditItemSummary
 from matomeru.mail import MailError
 from matomeru.models import ArxivPaper, RedditThread, ThreadFetchError
 from matomeru.notes import NotesClientError
+from matomeru.reranker_client import RerankerClientError
 from matomeru.sagashi_client import SagashiClientError
 from matomeru.state import get_run
 from matomeru.window import RunWindow, compute_run_window
@@ -100,6 +102,8 @@ def cli_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("SMTP_USER", raising=False)
     monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.delenv("RERANKER_URL", raising=False)
+    monkeypatch.delenv("RERANKER_TOKEN", raising=False)
     for key, value in make_env(tmp_path).items():
         monkeypatch.setenv(key, value)
     return toml_path
@@ -116,6 +120,8 @@ def _write_delivery_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> P
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("SMTP_USER", raising=False)
     monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.delenv("RERANKER_URL", raising=False)
+    monkeypatch.delenv("RERANKER_TOKEN", raising=False)
     for key, value in make_env(tmp_path).items():
         monkeypatch.setenv(key, value)
     return toml_path
@@ -176,11 +182,19 @@ def stub_collect_reddit(
     monkeypatch.setattr(cli, "collect_reddit", fake_collect_reddit)
 
 
-def stub_summarize_reddit(monkeypatch: pytest.MonkeyPatch, fail_ids: set[str] | None = None) -> None:
-    """Stub matomeru.cli.summarize_reddit_item; fail for the given thread ids."""
+def stub_summarize_reddit(
+    monkeypatch: pytest.MonkeyPatch, fail_ids: set[str] | None = None, called_ids: list[str] | None = None
+) -> None:
+    """Stub matomeru.cli.summarize_reddit_item; fail for the given thread ids.
+
+    When ``called_ids`` is given, every summarized thread id is appended to it
+    in call order.
+    """
     fail_ids = fail_ids or set()
 
     async def fake_summarize_reddit_item(agent: object, profile_text: str, thread: RedditThread) -> RedditItemSummary:
+        if called_ids is not None:
+            called_ids.append(thread.id)
         if thread.id in fail_ids:
             raise RuntimeError("LLM exploded")
         return RedditItemSummary(summary=f"Summary of {thread.title}", why_relevant="matches profile")
@@ -908,3 +922,185 @@ class TestPublicSurface:
     def test_compute_run_window_still_usable_directly(self) -> None:
         window = compute_run_window("UTC")
         assert window.end_utc.tzinfo is UTC
+
+
+# --- Reddit reranker funnel (v1.1.0) ------------------------------------------
+
+RERANKER_URL = "http://reranker.invalid/v1/rerank"
+
+
+def stub_reranker(
+    monkeypatch: pytest.MonkeyPatch, scores: dict[str, float], *, fail: bool = False
+) -> list[tuple[object, ...]]:
+    """Stub matomeru.cli.RerankerClient; scores documents by their title prefix.
+
+    Returns a call log: ("init", url, token) per client construction and
+    ("score", sections, documents) per scoring call.
+    """
+    calls: list[tuple[object, ...]] = []
+
+    class FakeRerankerClient:
+        def __init__(self, url: str, token: str | None = None, **kwargs: object) -> None:
+            self.url = url
+            self.token = token
+            calls.append(("init", url, token))
+
+        async def rerank_sections_with_argmax(
+            self, sections: list[str], documents: list[str]
+        ) -> list[tuple[float, int]]:
+            if fail:
+                raise RerankerClientError("reranker unavailable")
+            calls.append(("score", list(sections), list(documents)))
+            return [(scores[document.split("\n\n", 1)[0]], 0) for document in documents]
+
+    monkeypatch.setattr(cli, "RerankerClient", FakeRerankerClient)
+    return calls
+
+
+def rerank_rows(state_db: str) -> list[tuple]:
+    """All rerank_scores rows ordered by item_id (test helper)."""
+    conn = sqlite3.connect(state_db)
+    try:
+        return conn.execute("SELECT item_id, score, kept, section FROM rerank_scores ORDER BY item_id").fetchall()
+    finally:
+        conn.close()
+
+
+class TestRedditRerankerFunnel:
+    """Reranker funnel integration in _pipeline_reddit."""
+
+    def test_reranker_disabled_is_byte_for_byte_v1(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """No RERANKER_URL: the digest is exactly the v1 render, no funnel line."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        fixed_window = compute_run_window("UTC", now=datetime(2026, 11, 9, 12, 0, 0, tzinfo=UTC))
+        monkeypatch.setattr(cli, "compute_run_window", lambda tz: fixed_window)
+
+        threads = [make_thread(1), make_thread(2)]
+        stub_collect_reddit(monkeypatch, threads)
+        stub_summarize_reddit(monkeypatch)
+        mail_calls = stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_reddit(["--config", str(config_path)])
+
+        assert exit_code == 0
+        expected_items = [
+            (thread, RedditItemSummary(summary=f"Summary of {thread.title}", why_relevant="matches profile"))
+            for thread in threads
+        ]
+        expected_body = render_reddit_digest("2026-11-09", fixed_window, expected_items, [], partial=False)
+        expected_html = render_reddit_digest_html("2026-11-09", fixed_window, expected_items, [], partial=False)
+        assert saved[0][1] == expected_body
+        assert str(mail_calls[0]["html_body"]) == expected_html
+        assert "Ranked" not in expected_body
+        assert rerank_rows(make_env(tmp_path)["MATOMERU_STATE_DB"]) == []
+
+    def test_reranker_enabled_keeps_top_x_and_persists_scores(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only the top-X threads per subreddit are summarized; scores are persisted."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        monkeypatch.setenv("RERANKER_URL", RERANKER_URL)
+        state_db = make_env(tmp_path)["MATOMERU_STATE_DB"]
+
+        threads = [make_thread(1), make_thread(2), make_thread(3), make_thread(4), make_thread(5)]
+        stub_collect_reddit(monkeypatch, threads)
+        scores = {"Post 1": -1.0, "Post 2": -9.0, "Post 3": -3.0, "Post 4": -2.0, "Post 5": -8.0}
+        reranker_calls = stub_reranker(monkeypatch, scores)
+        called_ids: list[str] = []
+        stub_summarize_reddit(monkeypatch, called_ids=called_ids)
+        mail_calls = stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_reddit(["--config", str(config_path)])
+
+        assert exit_code == 0
+        # Default reddit_top_x=3: kept are the three highest scores, in collection order.
+        assert called_ids == ["t3_1", "t3_3", "t3_4"]
+
+        # One scoring call with one section query built as "name\n\ntext".
+        assert len(reranker_calls) == 2
+        assert reranker_calls[0][0] == "init"
+        assert reranker_calls[0][1] == RERANKER_URL
+        assert reranker_calls[1][1] == ["About me\n\nInterested in: exotic particles and slow loris conservation."]
+        assert reranker_calls[1][2] == [f"Post {i}\n\n" for i in range(1, 6)]
+
+        # Digest carries the deterministic funnel line; dropped threads are absent.
+        note_body = saved[0][1]
+        assert "Ranked 5 threads, kept 3" in note_body
+        assert "Post 1" in note_body and "Post 3" in note_body and "Post 4" in note_body
+        assert "Post 2" not in note_body and "Post 5" not in note_body
+        assert str(mail_calls[0]["html_body"]).count("Ranked 5 threads, kept 3") == 1
+
+        # Scores persisted: one row per collected item, kept flags 0/1.
+        assert rerank_rows(state_db) == [
+            ("t3_1", -1.0, 1, "About me"),
+            ("t3_2", -9.0, 0, "About me"),
+            ("t3_3", -3.0, 1, "About me"),
+            ("t3_4", -2.0, 1, "About me"),
+            ("t3_5", -8.0, 0, "About me"),
+        ]
+
+    def test_score_persistence_failure_does_not_fail_run(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A state glitch while recording scores must not fail delivery."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        monkeypatch.setenv("RERANKER_URL", RERANKER_URL)
+        state_db = make_env(tmp_path)["MATOMERU_STATE_DB"]
+
+        stub_collect_reddit(monkeypatch, [make_thread(1)])
+        stub_reranker(monkeypatch, {"Post 1": -1.0})
+        stub_summarize_reddit(monkeypatch)
+        stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("db exploded")
+
+        monkeypatch.setattr(cli, "record_rerank_scores", boom)
+
+        exit_code = cli.main_reddit(["--config", str(config_path)])
+
+        assert exit_code == 0
+        row = get_run(state_db, "reddit", row_report_date(state_db, "reddit"))
+        assert row is not None and row["status"] == "completed"
+        assert "Ranked 1 threads, kept 1" in saved[0][1]
+
+    def test_reranker_failure_fails_run_without_delivery(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Fail-early: a broken reranker aborts the run like a collection failure."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        monkeypatch.setenv("RERANKER_URL", RERANKER_URL)
+        state_db = make_env(tmp_path)["MATOMERU_STATE_DB"]
+
+        stub_collect_reddit(monkeypatch, [make_thread(1)])
+        stub_reranker(monkeypatch, {}, fail=True)
+        stub_summarize_reddit(monkeypatch)
+        mail_calls = stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_reddit(["--config", str(config_path)])
+
+        assert exit_code == 1
+        row = get_run(state_db, "reddit", row_report_date(state_db, "reddit"))
+        assert row is not None and row["status"] == "failed"
+        assert mail_calls == []
+        assert saved == []
+
+    def test_reranker_enabled_with_no_threads_skips_funnel(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An empty collection stays a quiet v1 no-results day even with the funnel on."""
+        config_path = _write_delivery_config(monkeypatch, tmp_path)
+        monkeypatch.setenv("RERANKER_URL", RERANKER_URL)
+
+        stub_collect_reddit(monkeypatch, [])
+        reranker_calls = stub_reranker(monkeypatch, {})
+        stub_summarize_reddit(monkeypatch)
+        stub_send_mail(monkeypatch)
+        saved = stub_notes(monkeypatch)
+
+        exit_code = cli.main_reddit(["--config", str(config_path)])
+
+        assert exit_code == 0
+        assert reranker_calls == []  # client never constructed
+        assert "Ranked" not in saved[0][1]
+        assert REDDIT_NO_RESULTS in saved[0][1]

@@ -167,6 +167,40 @@ class RerankerClient:
             )
         return results
 
+    async def rerank_sections_with_argmax(self, sections: list[str], documents: list[str]) -> list[tuple[float, int]]:
+        """Score documents against every profile section, keeping the argmax per document.
+
+        Companion to :meth:`rerank_sections` that additionally exposes *which*
+        section produced each document's winning score (the funnel records it
+        as the winning section name). One rerank call per section (sequential
+        — the sidecar processes one batched request per call).
+
+        Args:
+            sections: The query texts (one per profile section).
+            documents: The documents to rank, in request order.
+
+        Returns:
+            One ``(score, section_index)`` pair per document, in document
+            order, where ``score`` is the max across sections and
+            ``section_index`` is the index of the section that produced it.
+            On ties the **first** section (lowest index) wins.
+
+        Raises:
+            RerankerClientError: On transport failure, non-200 status, or a
+                malformed/incomplete response in any section call.
+        """
+        if not sections:
+            raise RerankerClientError("rerank_sections requires at least one section")
+        best: list[float] = [float("-inf")] * len(documents)
+        best_section: list[int] = [0] * len(documents)
+        for section_idx, section in enumerate(sections):
+            results = await self.rerank(section, documents)
+            for result in results:
+                if result.score > best[result.index]:
+                    best[result.index] = result.score
+                    best_section[result.index] = section_idx
+        return list(zip(best, best_section, strict=True))
+
     async def rerank_sections(self, sections: list[str], documents: list[str]) -> list[float]:
         """Score documents against every profile section, taking the max per document.
 
@@ -187,12 +221,5 @@ class RerankerClient:
             RerankerClientError: On transport failure, non-200 status, or a
                 malformed/incomplete response in any section call.
         """
-        if not sections:
-            raise RerankerClientError("rerank_sections requires at least one section")
-        best: list[float] = [float("-inf")] * len(documents)
-        for section in sections:
-            results = await self.rerank(section, documents)
-            for result in results:
-                if result.score > best[result.index]:
-                    best[result.index] = result.score
-        return best
+        pairs = await self.rerank_sections_with_argmax(sections, documents)
+        return [score for score, _section_idx in pairs]

@@ -47,6 +47,7 @@ from matomeru.digest import (
     render_reddit_digest,
     render_reddit_digest_html,
 )
+from matomeru.funnel import funnel_reddit_threads
 from matomeru.llm import (
     ArxivPaperSummary,
     ArxivRelevanceDecision,
@@ -61,8 +62,9 @@ from matomeru.mail import MailError, build_digest_message, digest_subject, send_
 from matomeru.models import ArxivPaper, RedditThread, ThreadFetchError
 from matomeru.notes import NotesClientError, NotesMcpClient, build_note_path
 from matomeru.reddit import collect_reddit
+from matomeru.reranker_client import RerankerClient
 from matomeru.sagashi_client import SagashiClient
-from matomeru.state import begin_run, complete_run, fail_run, mark_delivery
+from matomeru.state import begin_run, complete_run, fail_run, mark_delivery, record_rerank_scores
 from matomeru.window import RunWindow, compute_run_window
 
 logger = logging.getLogger(__name__)
@@ -94,10 +96,13 @@ def _best_effort_state(description: str, action: Callable[[], None]) -> None:
 async def _pipeline_reddit(
     app: AppConfig, runtime: RuntimeConfig, profile_text: str, window: RunWindow, report_date: str
 ) -> _DigestData:
-    """Collect Reddit threads, summarize them, and render the digest.
+    """Collect Reddit threads, funnel them, summarize, and render the digest.
 
     Collection failure propagates (aborts the run); per-thread LLM failures
-    are logged, excluded from the digest, and mark the run partial.
+    are logged, excluded from the digest, and mark the run partial. When the
+    reranker is configured, only the funnel-selected threads are summarized;
+    dropped threads are excluded by design, not failures. With no reranker
+    URL the funnel is skipped and v1 behavior is unchanged.
     """
     agent = make_agent(runtime)
     client = SagashiClient(runtime.sagashi_mcp_url, runtime.sagashi_mcp_token)
@@ -109,6 +114,39 @@ async def _pipeline_reddit(
         comments_per_post=app.reddit_comments_per_post,
     )
     logger.info("collected %d reddit thread(s), %d fetch error(s)", len(threads), len(fetch_errors))
+
+    # Reranker funnel (v1.1.0): when configured, score every collected thread
+    # and keep only the top X per subreddit for summarization. Funnel failures
+    # propagate and fail the run (fail-early, like collection failures);
+    # dropped threads are excluded by design and never mark the run partial.
+    # Without a reranker URL the funnel is skipped entirely (v1 behavior).
+    funnel_line: str | None = None
+    if runtime.reranker_url is not None and threads:
+        collected_count = len(threads)
+        reranker = RerankerClient(runtime.reranker_url, runtime.reranker_token)
+        outcome = await funnel_reddit_threads(
+            threads,
+            [f"{section.name}\n\n{section.text}" for section in app.profile_sections],
+            reranker,
+            top_x=app.reranker_reddit_top_x,
+            min_score=app.reranker_min_score,
+            report_date=report_date,
+        )
+        _best_effort_state(
+            "record rerank scores",
+            lambda: record_rerank_scores(runtime.state_db_path, "reddit", report_date, outcome.scored),
+        )
+        for scored_item in outcome.scored:
+            if not scored_item.kept:
+                logger.debug(
+                    "funnel dropped thread id=%s subreddit=%s score=%s",
+                    scored_item.item_id,
+                    scored_item.subreddit,
+                    scored_item.score,
+                )
+        logger.info("funnel kept %d of %d reddit thread(s)", len(outcome.kept), collected_count)
+        threads = outcome.kept
+        funnel_line = f"Ranked {collected_count} threads, kept {len(outcome.kept)}"
 
     items: list[tuple[RedditThread, RedditItemSummary]] = []
     llm_failures: list[ThreadFetchError] = []
@@ -128,6 +166,7 @@ async def _pipeline_reddit(
         items,
         [*fetch_errors, *llm_failures],
         partial=partial,
+        funnel_line=funnel_line,
     )
     html_body = render_reddit_digest_html(
         report_date,
@@ -135,6 +174,7 @@ async def _pipeline_reddit(
         items,
         [*fetch_errors, *llm_failures],
         partial=partial,
+        funnel_line=funnel_line,
     )
     return _DigestData(body=body, html_body=html_body, partial=partial, item_count=len(items), extra_summary="")
 

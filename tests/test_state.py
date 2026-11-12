@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from matomeru.funnel import ScoredItem
 from matomeru.state import (
     begin_run,
     complete_run,
     fail_run,
     get_run,
     mark_delivery,
+    record_rerank_scores,
 )
 from matomeru.window import compute_run_window
 
@@ -360,3 +363,75 @@ class TestSchema:
                 ),
             )
         conn.close()
+
+
+class TestRecordRerankScores:
+    """Tests for record_rerank_scores and the rerank_scores table."""
+
+    def _fetch_all(self, db_path: str) -> list[tuple]:
+        conn = sqlite3.connect(db_path)
+        try:
+            return conn.execute(
+                "SELECT source, report_date, item_id, score, kept, section FROM rerank_scores ORDER BY item_id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def test_table_created_implicitly(self, tmp_path: Path) -> None:
+        db_path = str(tmp_path / "test.db")
+        record_rerank_scores(db_path, "reddit", "2026-11-12", [])
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rerank_scores'")
+            assert cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def test_rows_written_and_retrievable(self, tmp_path: Path) -> None:
+        db_path = str(tmp_path / "test.db")
+        rows = [
+            ScoredItem(item_id="t3_1", subreddit="python", score=-5.1, section="Hardware", kept=True),
+            ScoredItem(item_id="t3_2", subreddit="python", score=-8.4, section="Cooking", kept=False),
+        ]
+        record_rerank_scores(db_path, "reddit", "2026-11-12", rows)
+
+        assert self._fetch_all(db_path) == [
+            ("reddit", "2026-11-12", "t3_1", -5.1, 1, "Hardware"),
+            ("reddit", "2026-11-12", "t3_2", -8.4, 0, "Cooking"),
+        ]
+
+    def test_kept_stored_as_zero_or_one(self, tmp_path: Path) -> None:
+        db_path = str(tmp_path / "test.db")
+        record_rerank_scores(
+            db_path,
+            "reddit",
+            "2026-11-12",
+            [ScoredItem(item_id="t3_1", subreddit="python", score=-1.0, section="S", kept=True)],
+        )
+        conn = sqlite3.connect(db_path)
+        try:
+            kept_values = [row[0] for row in conn.execute("SELECT kept FROM rerank_scores").fetchall()]
+        finally:
+            conn.close()
+        assert kept_values == [1]
+        assert all(isinstance(v, int) for v in kept_values)
+
+    def test_idempotent_reinsert_replaces_row(self, tmp_path: Path) -> None:
+        db_path = str(tmp_path / "test.db")
+        first = ScoredItem(item_id="t3_1", subreddit="python", score=-5.0, section="Old", kept=False)
+        second = ScoredItem(item_id="t3_1", subreddit="python", score=-2.0, section="New", kept=True)
+        record_rerank_scores(db_path, "reddit", "2026-11-12", [first])
+        record_rerank_scores(db_path, "reddit", "2026-11-12", [second])
+
+        rows = self._fetch_all(db_path)
+        assert len(rows) == 1
+        assert rows[0] == ("reddit", "2026-11-12", "t3_1", -2.0, 1, "New")
+
+    def test_rows_are_scoped_by_source_and_date(self, tmp_path: Path) -> None:
+        db_path = str(tmp_path / "test.db")
+        row = ScoredItem(item_id="t3_1", subreddit="python", score=-1.0, section="S", kept=True)
+        record_rerank_scores(db_path, "reddit", "2026-11-12", [row])
+        record_rerank_scores(db_path, "reddit", "2026-11-13", [row])
+        record_rerank_scores(db_path, "arxiv", "2026-11-12", [row])
+
+        assert len(self._fetch_all(db_path)) == 3

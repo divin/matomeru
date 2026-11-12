@@ -211,3 +211,62 @@ async def test_rerank_sections_token_sends_authorization_header() -> None:
     await client.rerank_sections(["section one"], ["doc a"])
 
     assert transport.last_headers["Authorization"] == "Bearer secret"
+
+
+class SequencedTransport:
+    """A fake transport that returns a different canned payload per call."""
+
+    def __init__(self, payloads: list[dict[str, Any]]) -> None:
+        self._payloads = payloads
+        self.call_count = 0
+
+    async def post(
+        self, url: str, *, json: dict[str, Any] | None = None, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        payload = self._payloads[self.call_count]
+        self.call_count += 1
+        return make_response(payload)
+
+
+@pytest.mark.asyncio
+async def test_rerank_sections_with_argmax_returns_winning_section() -> None:
+    """Each document gets (max score, index of the winning section)."""
+    transport = SequencedTransport([make_payload([-9.0, -5.0]), make_payload([-5.6, -1.2])])
+    client = RerankerClient("http://reranker.invalid/v1/rerank", transport=transport)
+
+    pairs = await client.rerank_sections_with_argmax(["section zero", "section one"], ["doc a", "doc b"])
+
+    assert pairs == [(-5.6, 1), (-1.2, 1)]
+    assert transport.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rerank_sections_with_argmax_tie_prefers_first_section() -> None:
+    """On an exact tie the first (lowest-index) section wins."""
+    transport = SequencedTransport([make_payload([-3.0]), make_payload([-3.0])])
+    client = RerankerClient("http://reranker.invalid/v1/rerank", transport=transport)
+
+    pairs = await client.rerank_sections_with_argmax(["section zero", "section one"], ["doc a"])
+
+    assert pairs == [(-3.0, 0)]
+
+
+@pytest.mark.asyncio
+async def test_rerank_sections_still_returns_flat_scores() -> None:
+    """The 7a public behavior is unchanged: one plain score per document."""
+    transport = SequencedTransport([make_payload([-9.0, -5.0]), make_payload([-5.6, -1.2])])
+    client = RerankerClient("http://reranker.invalid/v1/rerank", transport=transport)
+
+    scores = await client.rerank_sections(["section zero", "section one"], ["doc a", "doc b"])
+
+    assert scores == [-5.6, -1.2]
+
+
+@pytest.mark.asyncio
+async def test_rerank_sections_with_argmax_requires_a_section() -> None:
+    """Empty sections raise the same error as rerank_sections."""
+    transport = SequencedTransport([])
+    client = RerankerClient("http://reranker.invalid/v1/rerank", transport=transport)
+
+    with pytest.raises(RerankerClientError, match="requires at least one section"):
+        await client.rerank_sections_with_argmax([], ["doc a"])
