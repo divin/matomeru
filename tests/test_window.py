@@ -70,14 +70,14 @@ class TestComputeRunWindow:
     def test_dst_handling_via_utc_arithmetic(self) -> None:
         """DST is handled correctly by subtracting on UTC instants."""
         # March 10, 2024 at 05:00 UTC = March 10, 2024 at 00:00 EST (UTC-5)
-        # March 10, 2024 is DST transition day in US/Eastern (Spring forward at 02:00 local)
+        # March 10, 2024 is DST transition day in America/New_York (Spring forward at 02:00 local)
         # 24h earlier = March 09, 2024 at 05:00 UTC = March 09, 2024 at 00:00 EST
         now = datetime(2024, 3, 10, 5, 0, 0, tzinfo=timezone.utc)
-        result = compute_run_window("US/Eastern", now=now)
+        result = compute_run_window("America/New_York", now=now)
 
         assert result.end_utc == now
         assert result.start_utc == now - timedelta(hours=24)
-        # End time in US/Eastern is 00:00 EDT on March 10
+        # End time in America/New_York is 00:00 EDT on March 10
         end_in_tz = result.end_utc.astimezone(timezone.utc)
         assert end_in_tz.date() == datetime(2024, 3, 10).date()
 
