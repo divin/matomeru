@@ -59,10 +59,16 @@ Prerequisites: [uv](https://docs.astral.sh/uv/) (provides Python 3.12), a runnin
 
 2. Copy `example.matomeru.toml` to `matomeru.toml` and fill in your values, including the `[[profile.sections]]` tables — your interest profile as `name`/`text` sections (at least one; embedded into every prompt and used as the reranker's per-section scoring queries). The `[[profile.sections]]` and `[reddit] subreddits` fields are required; see the [configuration reference](#%EF%B8%8F-configuration-reference). The file is looked up at the explicit `--config` path, the `MATOMERU_CONFIG` environment variable, or `matomeru.toml` in the current working directory, in that order.
 3. Copy `example.env` to `.env` and fill in the TODO values. All variables (required and optional) are listed there; the required ones are enforced at startup.
-4. Verify with a dry run — prints the computed window plan and exits 0 without touching state or the network:
+4. Verify with a dry run — runs preflight checks (SMTP credentials, LLM/MCP configuration, state database location) and prints the computed window plan, without touching state or the network. Exits 1 if any check fails:
 
    ```sh
    uv run matomeru-reddit --dry-run
+   ```
+
+   Add `--live` to also probe network reachability (TCP connect to the SMTP server, HTTP probes of the Sagashi/Notes/LLM endpoints). `--live` requires `--dry-run`:
+
+   ```sh
+   uv run matomeru-reddit --dry-run --live
    ```
 
    Do the same for `matomeru-arxiv` if you use it.
@@ -168,8 +174,8 @@ Timezone notes:
 
 ### Exit codes
 
-- `0` — the digest was delivered, the run was skipped (already completed), or it was a `--dry-run`.
-- `1` — configuration error (`ConfigError`, e.g. missing required env vars, bad TOML, empty arXiv selectors, invalid timezone) or an incomplete run (partial content, failed collection, or a failed destination).
+- `0` — the digest was delivered, the run was skipped (already completed), or it was a `--dry-run` (preflight passed).
+- `1` — configuration error (`ConfigError`, e.g. missing required env vars, bad TOML, empty arXiv selectors, invalid timezone), an incomplete run (partial content, failed collection, or a failed destination), or a failed `--dry-run` preflight.
 
 ### Logging
 

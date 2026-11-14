@@ -421,6 +421,56 @@ class TestDryRun:
         assert cli.main_reddit(["--dry-run", "--config", str(cli_env)]) == 0
         assert cli.main_arxiv(["--dry-run", "--config", str(cli_env)]) == 0
 
+    def test_dry_run_runs_preflight(self, cli_env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = cli.main_reddit(["--dry-run", "--config", str(cli_env)])
+
+        assert exit_code == 0
+        assert "preflight" in capsys.readouterr().err.lower()
+
+    def test_dry_run_preflight_failure_exits_one(
+        self, monkeypatch: pytest.MonkeyPatch, cli_env: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """SMTP_USER set without SMTP_PASSWORD is a preflight failure."""
+        monkeypatch.setenv("SMTP_USER", "alice")
+
+        exit_code = cli.main_reddit(["--dry-run", "--config", str(cli_env)])
+
+        assert exit_code == 1
+        assert "failed" in capsys.readouterr().err.lower()
+
+    def test_live_requires_dry_run(self, cli_env: Path) -> None:
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main_reddit(["--live", "--config", str(cli_env)])
+        assert excinfo.value.code == 2
+
+    def test_dry_run_live_probes(self, monkeypatch: pytest.MonkeyPatch, cli_env: Path) -> None:
+        """With --live, probes run but are stubbed to succeed; no pipeline calls."""
+        import matomeru.preflight as pf
+
+        class FakeSocket:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def __enter__(self) -> FakeSocket:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        class FakeResponse:
+            status_code = 200
+
+        monkeypatch.setattr(pf.socket, "create_connection", FakeSocket)
+        monkeypatch.setattr(pf.httpx, "get", lambda *a, **kw: FakeResponse())
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise AssertionError("pipeline must not run on dry-run")
+
+        monkeypatch.setattr(cli, "collect_reddit", boom)
+        monkeypatch.setattr(cli, "send_mail", boom)
+
+        assert cli.main_reddit(["--dry-run", "--live", "--config", str(cli_env)]) == 0
+
 
 class TestMissingEnv:
     """Missing required env vars exit 1 with a clean error, no DB created."""

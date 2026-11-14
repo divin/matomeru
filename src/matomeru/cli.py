@@ -5,8 +5,10 @@ sequentially via the LLM, renders the digest deterministically, delivers it
 to two independent destinations (email + notes vault), and records run state.
 
 Semantics:
-- ``--dry-run`` prints the window plan and exits 0 before any state access
-  or network call.
+- ``--dry-run`` prints the window plan, then runs preflight checks (offline
+  by default; ``--live`` adds network reachability probes) and exits 0 only
+  if no check failed. State is never touched and no digest is fetched.
+- ``--live`` requires ``--dry-run``.
 - ``begin_run`` returning ``skipped`` exits 0 without touching anything;
   ``restart`` (also reached via ``--force``) proceeds normally.
 - Item-level LLM failures exclude that item and mark the run partial; the
@@ -61,6 +63,7 @@ from matomeru.logging_setup import configure_logging
 from matomeru.mail import MailError, build_digest_message, digest_subject, send_mail
 from matomeru.models import ArxivPaper, RedditThread, ThreadFetchError
 from matomeru.notes import NotesClientError, NotesMcpClient, build_note_path
+from matomeru.preflight import log_checks, run_preflight
 from matomeru.reddit import collect_reddit
 from matomeru.reranker_client import RerankerClient
 from matomeru.sagashi_client import SagashiClient
@@ -403,7 +406,14 @@ def _build_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--force", action="store_true", help="Restart the run even if already completed")
     parser.add_argument("--config", default=None, help="Path to matomeru.toml config file")
-    parser.add_argument("--dry-run", action="store_true", help="Print the window plan and exit without touching state")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Run preflight checks and print the window plan without touching state"
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="With --dry-run, also probe network endpoints (SMTP TCP connect, MCP/LLM reachability)",
+    )
     return parser
 
 
@@ -414,7 +424,10 @@ def _run_source(source: str, argv: list[str] | None) -> int:
         0 on success (dry-run, skipped, or fully successful run),
         1 on ConfigError or an incomplete (partial/failed) run.
     """
-    args = _build_parser(f"Run the {source} pipeline").parse_args(argv)
+    parser = _build_parser(f"Run the {source} pipeline")
+    args = parser.parse_args(argv)
+    if args.live and not args.dry_run:
+        parser.error("--live requires --dry-run")
 
     runtime: RuntimeConfig | None = None
     report_date: str | None = None
@@ -434,6 +447,11 @@ def _run_source(source: str, argv: list[str] | None) -> int:
                 window.start_utc.isoformat(),
                 window.end_utc.isoformat(),
             )
+            failures = log_checks(run_preflight(app, runtime, source, live=args.live))
+            if failures:
+                logger.error("dry-run preflight failed for source=%s: %d check(s) failed", source, failures)
+                return 1
+            logger.info("dry-run preflight passed for source=%s", source)
             return 0
 
         begin_report_date, action = begin_run(runtime.state_db_path, source, window, force=args.force)
