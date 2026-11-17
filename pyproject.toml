@@ -1,6 +1,6 @@
 [project]
 name = "matomeru"
-version = "1.2.0"
+version = "1.2.1"
 description = "Daily Reddit and arXiv digests with personalized summaries"
 readme = "README.md"
 authors = [

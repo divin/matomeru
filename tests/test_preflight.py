@@ -208,7 +208,7 @@ class TestLiveProbes:
                 return None
 
         class FakeResponse:
-            pass
+            status_code: int
 
         FakeResponse.status_code = status_code
         monkeypatch.setattr(pf.socket, "create_connection", FakeSocket)

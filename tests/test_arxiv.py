@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+from matomeru import __version__
 from matomeru.arxiv import _base_id, _normalize_category, collect_arxiv
 from matomeru.config import ConfigError
 from matomeru.window import RunWindow
@@ -320,7 +321,7 @@ class TestCollectArxiv:
         assert [r.url.path for r in captured] == ["/rss/cs.AI", "/rss/cs.LG"]
         for request in captured:
             assert request.url.host == "rss.arxiv.org"
-            assert request.headers["User-Agent"].startswith("matomeru/1.1.0")
+            assert request.headers["User-Agent"].startswith(f"matomeru/{__version__}")
             assert "(self-hosted digest)" in request.headers["User-Agent"]
 
     @pytest.mark.asyncio
