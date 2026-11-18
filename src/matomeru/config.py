@@ -10,6 +10,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Default reranker HTTP timeout in seconds. The sidecar may run CPU-only
+# (e.g. when the GPU is busy with the main LLM), making a full 112-document
+# section batch take ~10 minutes; the default covers that. Override with
+# RERANKER_TIMEOUT.
+DEFAULT_RERANKER_TIMEOUT_SECONDS = 600.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +71,7 @@ class RuntimeConfig:
     tz_iana: str
     reranker_url: str | None = None
     reranker_token: str | None = None
+    reranker_timeout: float = DEFAULT_RERANKER_TIMEOUT_SECONDS
     state_db_path: str = ""
 
 
@@ -243,6 +250,17 @@ def _optional_env(name: str) -> str | None:
     return value if value else None
 
 
+def _parse_reranker_timeout(value: str) -> float:
+    """Parse RERANKER_TIMEOUT, converting a bad value into a ConfigError."""
+    try:
+        seconds = float(value)
+    except ValueError as e:
+        raise ConfigError(f"RERANKER_TIMEOUT must be a number, got: {value!r}") from e
+    if seconds <= 0:
+        raise ConfigError(f"RERANKER_TIMEOUT must be positive, got: {value!r}")
+    return seconds
+
+
 def _parse_smtp_port(value: str) -> int:
     """Parse SMTP_PORT, converting a bad value into a ConfigError."""
     try:
@@ -265,6 +283,7 @@ def load_runtime_config() -> RuntimeConfig:
         NOTES_MCP_TOKEN (None) - bearer token for the Notes MCP server
         RERANKER_URL (None) - reranker endpoint URL; unset skips the funnel
         RERANKER_TOKEN (None) - bearer token for the reranker endpoint
+        RERANKER_TIMEOUT (600) - reranker request timeout in seconds
         LLM_API_KEY (None)
         SMTP_USER (empty string)
         SMTP_PASSWORD (empty string)
@@ -311,4 +330,9 @@ def load_runtime_config() -> RuntimeConfig:
         state_db_path=_optional_env("MATOMERU_STATE_DB") or state_db_default,
         reranker_url=_optional_env("RERANKER_URL"),
         reranker_token=_optional_env("RERANKER_TOKEN"),
+        reranker_timeout=(
+            _parse_reranker_timeout(os.environ["RERANKER_TIMEOUT"])
+            if os.environ.get("RERANKER_TIMEOUT")
+            else DEFAULT_RERANKER_TIMEOUT_SECONDS
+        ),
     )

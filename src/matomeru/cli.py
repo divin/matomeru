@@ -126,7 +126,7 @@ async def _pipeline_reddit(
     funnel_line: str | None = None
     if runtime.reranker_url is not None and threads:
         collected_count = len(threads)
-        reranker = RerankerClient(runtime.reranker_url, runtime.reranker_token)
+        reranker = RerankerClient(runtime.reranker_url, runtime.reranker_token, timeout=runtime.reranker_timeout)
         outcome = await funnel_reddit_threads(
             threads,
             [f"{section.name}\n\n{section.text}" for section in app.profile_sections],
@@ -227,7 +227,7 @@ async def _pipeline_arxiv(
     funnel_line: str | None = None
     if runtime.reranker_url is not None and papers:
         collected_count = len(papers)
-        reranker = RerankerClient(runtime.reranker_url, runtime.reranker_token)
+        reranker = RerankerClient(runtime.reranker_url, runtime.reranker_token, timeout=runtime.reranker_timeout)
         outcome = await funnel_arxiv_papers(
             papers,
             [f"{section.name}\n\n{section.text}" for section in app.profile_sections],

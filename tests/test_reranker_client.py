@@ -157,6 +157,23 @@ async def test_rerank_network_error_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rerank_timeout_error_message_includes_type() -> None:
+    """Timeouts produce a non-empty message: str(ReadTimeout) can be empty."""
+    transport = FakeTransport(payload=make_payload([-1.0]))
+    client = RerankerClient("http://reranker.invalid/v1/rerank", transport=transport, timeout=120)
+
+    async def failing_post(
+        url: str, *, json: dict[str, Any] | None = None, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        raise httpx.ReadTimeout("")
+
+    transport.post = failing_post  # type: ignore[method-assign]
+
+    with pytest.raises(RerankerClientError, match="failed after 120s: ReadTimeout"):
+        await client.rerank("query", ["doc a"])
+
+
+@pytest.mark.asyncio
 async def test_rerank_sections_max_per_document() -> None:
     """rerank_sections returns the max score per document across sections."""
     transport = FakeTransport(payload={})

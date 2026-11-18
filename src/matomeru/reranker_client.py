@@ -101,7 +101,8 @@ class RerankerClient:
         try:
             response = await transport.post(self._url, headers=self.headers, json=body)
         except httpx.HTTPError as e:
-            raise RerankerClientError(f"rerank request failed: {e}") from e
+            # str(httpx.ReadTimeout) can be empty — always include the type.
+            raise RerankerClientError(f"rerank request failed after {self._timeout:g}s: {type(e).__name__}: {e}") from e
 
         body_text = response.text
         if response.status_code != 200:

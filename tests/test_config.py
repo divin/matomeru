@@ -727,6 +727,66 @@ class TestLoadRuntimeConfig:
         config = load_runtime_config()
         assert config.notes_mcp_token == "notes-secret"
 
+    def test_reranker_timeout_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """RERANKER_TIMEOUT defaults to 600s when unset."""
+        env = {
+            "SAGASHI_MCP_URL": "http://sagashi:8000",
+            "NOTES_MCP_URL": "http://notes:9008/mcp",
+            "LLM_BASE_URL": "http://localhost:11434/v1",
+            "LLM_MODEL": "llama3",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_FROM": "matomeru@example.com",
+            "SMTP_TO": "user@example.com",
+            "TZ": "America/New_York",
+        }
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+
+        config = load_runtime_config()
+        assert config.reranker_timeout == 600.0
+
+    def test_reranker_timeout_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """RERANKER_TIMEOUT accepts a positive number of seconds."""
+        env = {
+            "SAGASHI_MCP_URL": "http://sagashi:8000",
+            "NOTES_MCP_URL": "http://notes:9008/mcp",
+            "LLM_BASE_URL": "http://localhost:11434/v1",
+            "LLM_MODEL": "llama3",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_FROM": "matomeru@example.com",
+            "SMTP_TO": "user@example.com",
+            "TZ": "America/New_York",
+            "RERANKER_TIMEOUT": "900.5",
+        }
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+
+        config = load_runtime_config()
+        assert config.reranker_timeout == 900.5
+
+    @pytest.mark.parametrize("bad", ["abc", "0", "-5"])
+    def test_reranker_timeout_invalid(self, monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+        """RERANKER_TIMEOUT rejects non-numeric and non-positive values."""
+        env = {
+            "SAGASHI_MCP_URL": "http://sagashi:8000",
+            "NOTES_MCP_URL": "http://notes:9008/mcp",
+            "LLM_BASE_URL": "http://localhost:11434/v1",
+            "LLM_MODEL": "llama3",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_FROM": "matomeru@example.com",
+            "SMTP_TO": "user@example.com",
+            "TZ": "America/New_York",
+        }
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+
+        monkeypatch.setenv("RERANKER_TIMEOUT", bad)
+        with pytest.raises(ConfigError, match="RERANKER_TIMEOUT"):
+            load_runtime_config()
+
     def test_missing_required_vars_reported_together(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Missing required env vars are reported together."""
         env = {
