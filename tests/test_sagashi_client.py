@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from fastmcp import FastMCP
 
-from matomeru.sagashi_client import SagashiClient, SagashiClientError
+from matomeru.sagashi_client import FETCH_THREADS_CHUNK_SIZE, SagashiClient, SagashiClientError
 
 POST_A = {
     "id": "t3_a",
@@ -212,6 +212,36 @@ class TestFetchRedditThreads:
         client = make_client(threads_impl=threads_impl)
         await client.fetch_reddit_threads(["a", "b"], comment_count=7)
         assert seen == {"items": ["a", "b"], "comment_count": 7}
+
+    async def test_large_batch_is_chunked_and_merged(self) -> None:
+        """Items beyond FETCH_THREADS_CHUNK_SIZE are split; results/errors merge
+        in order and error indices point into the original items list."""
+        calls: list[list[str]] = []
+
+        def threads_impl(items: list[str], comment_count: int) -> dict[str, Any]:
+            calls.append(list(items))
+            errors = [{"item": "t3_3", "error": "not found"}] if "t3_3" in items else []
+            return {"results": [dict(THREAD_A, id=i) for i in items], "errors": errors}
+
+        ids = [f"t3_{i}" for i in range(FETCH_THREADS_CHUNK_SIZE + 5)]
+        client = make_client(threads_impl=threads_impl)
+        batch = await client.fetch_reddit_threads(ids)
+
+        assert [len(c) for c in calls] == [FETCH_THREADS_CHUNK_SIZE, 5]
+        assert [i for c in calls for i in c] == ids  # chunk order preserves input order
+        assert [t.id for t in batch.threads] == ids  # merged in input order
+        assert [(e.index, e.item, e.error) for e in batch.errors] == [
+            (ids.index("t3_3"), "t3_3", "not found")
+        ]
+
+    async def test_chunk_failure_aborts_whole_fetch(self) -> None:
+        def threads_impl(items: list[str], comment_count: int) -> dict[str, Any]:
+            raise RuntimeError("transport exploded")
+
+        ids = [f"t3_{i}" for i in range(FETCH_THREADS_CHUNK_SIZE + 5)]
+        client = make_client(threads_impl=threads_impl)
+        with pytest.raises(SagashiClientError, match="transport exploded"):
+            await client.fetch_reddit_threads(ids)
 
 
 @pytest.mark.asyncio

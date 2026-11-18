@@ -18,7 +18,9 @@ Tool-call/response mapping assumptions (verified against Sagashi's contract):
   :class:`~matomeru.models.RedditComment`); errors map into
   :class:`~matomeru.models.ThreadFetchError` (dicts are expected to carry
   ``item`` and ``error``/``message`` plus optional ``index``; bare strings are
-  treated as the error message with an unknown item).
+  treated as the error message with an unknown item). Large batches are
+  transparently split into chunks of :data:`~matomeru.sagashi_client.FETCH_THREADS_CHUNK_SIZE`
+  requests to keep each MCP response under the transport's SSE size limit.
 - Response payloads are read from structured content when the server provides
   it, otherwise parsed from the JSON text content blocks.
 
@@ -54,6 +56,12 @@ logger = logging.getLogger(__name__)
 
 LIST_POSTS_TOOL = "list_subreddit_posts"
 FETCH_THREADS_TOOL = "fetch_reddit_threads"
+
+# Max items per fetch_reddit_threads request. The MCP client's SSE transport
+# rejects single server-sent events above 1 MiB, and a large thread batch
+# (100+ threads with comments) can exceed that. Chunking keeps each response
+# well under the limit at the cost of a few extra round-trips.
+FETCH_THREADS_CHUNK_SIZE = 20
 
 
 class SagashiClientError(Exception):
@@ -260,12 +268,32 @@ class SagashiClient:
         return SubredditListing(post_items=posts, cursor=cursor_value if isinstance(cursor_value, str) else None)
 
     async def fetch_reddit_threads(self, items: list[str], comment_count: int = 20) -> ThreadBatch:
-        """Fetch multiple threads (with comments) in one batch call.
+        """Fetch multiple threads (with comments) in chunked batch calls.
+
+        ``items`` is split into chunks of :data:`FETCH_THREADS_CHUNK_SIZE` and
+        each chunk is fetched with one ``fetch_reddit_threads`` call; results
+        are merged in input order. Error ``index`` values reported by a chunk
+        are offsets into that chunk, so they are re-offset to point into the
+        original ``items`` list.
 
         Raises:
             SagashiClientError: On transport/protocol failure or malformed
-                payloads (threads lacking ``id``/``permalink`` included).
+                payloads (threads lacking ``id``/``permalink`` included). A
+                failed chunk aborts the whole fetch.
         """
+        items = list(items)
+        threads: list[RedditThread] = []
+        errors: list[ThreadFetchError] = []
+        for start in range(0, len(items), FETCH_THREADS_CHUNK_SIZE):
+            chunk = items[start : start + FETCH_THREADS_CHUNK_SIZE]
+            batch = await self._fetch_threads_chunk(chunk, comment_count)
+            threads.extend(batch.threads)
+            for error in batch.errors:
+                errors.append(error.model_copy(update={"index": error.index + start}))
+        return ThreadBatch(threads=threads, errors=errors)
+
+    async def _fetch_threads_chunk(self, items: list[str], comment_count: int) -> ThreadBatch:
+        """Fetch one chunk of threads in a single batch call."""
         arguments: dict[str, Any] = {"items": list(items), "comment_count": comment_count}
         payload = await self._call(FETCH_THREADS_TOOL, arguments)
 
@@ -280,5 +308,14 @@ class SagashiClient:
             threads = [_map_thread(t) for t in results_raw if isinstance(t, dict)]
         except (KeyError, TypeError, ValueError) as e:
             raise SagashiClientError(f"Malformed thread in fetch_reddit_threads response: {e}") from e
-        errors = [_map_fetch_error(e, i) for i, e in enumerate(errors_raw)]
+        errors = []
+        for i, e in enumerate(errors_raw):
+            error = _map_fetch_error(e, i)
+            if not (isinstance(e, dict) and "index" in e):
+                # No explicit index from the server: the positional fallback is
+                # an index into the errors list, not necessarily into items.
+                # Prefer resolving the chunk-relative item index from the id.
+                if error.item and error.item in items:
+                    error = error.model_copy(update={"index": items.index(error.item)})
+            errors.append(error)
         return ThreadBatch(threads=threads, errors=errors)

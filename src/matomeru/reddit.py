@@ -41,7 +41,8 @@ async def collect_reddit(
 
     Posts are deduplicated across subreddits by id (first occurrence wins;
     duplicate source subreddits are logged). Threads for the surviving ids are
-    then fetched with exactly ONE batch ``fetch_reddit_threads`` call.
+    then fetched with chunked batch ``fetch_reddit_threads`` calls (the client
+    splits large batches to keep each MCP response under the SSE size limit).
 
     Per-subreddit listing failures are logged at WARNING level and skipped —
     they do not abort the run.
